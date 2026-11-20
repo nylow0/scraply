@@ -742,6 +742,21 @@ export async function advance(context: LoopContext): Promise<StepResult> {
       }
       context.ledger.logStep(context.projectId, "reopen", currentIdea(view)?.id ?? null, { after: lastFindings.id });
     }
+    // A pass an older Scraply handed to the agent ("handoff" step, before agents answered work orders) closes with
+    // the summary, finding, and variant notes the agent wrote after it, instead of being written up twice.
+    const after = stepLog(context).steps.filter(item => item.step !== "findings" && item.step !== "handoff").at(-1)?.id ?? 0;
+    const handoff = log.steps.filter(item => item.step === "handoff" && item.id > after).at(-1);
+    const since = z.object({ notes: z.number() }).safeParse(handoff?.detail);
+    const written = since.success
+      ? live(view.notes).filter(note => ["summary", "finding", "variant"].includes(note.kind) && parseId("note", note.id) > since.data.notes) : [];
+    if (written.length) {
+      const variants = written.filter(note => note.kind === "variant").map(note => note.id);
+      context.ledger.logStep(context.projectId, "findings", currentIdea(view)?.id ?? null, { by: "agent", notes: written.map(note => note.id), statuses: claimStatuses(view) });
+      return {
+        step: "findings", status: "needs-you", next: pickVariant(projectId, variants),
+        did: `Closed the pass with the ${written.filter(note => note.kind === "finding").length} finding(s) and ${variants.length} variant(s) written after it was handed over.`,
+      };
+    }
     return findings(context, view);
   }
   const blocked = log.last("blocked");

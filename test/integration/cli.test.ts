@@ -406,6 +406,16 @@ describe("scraply CLI", () => {
     expect(await scraply("submit", "--project", "P1", "--order", order)).toMatchObject({ data: { status: "think", workOrder: { step: "split" } } });
     expect(await scraply("show", "--project", "P1")).toMatchObject({ data: { quotes: [{ id: "Q1", source: "S1", speaker: "Hive app" }], notes: [{ kind: "framing" }, { kind: "prior-art", quotes: ["Q1"] }] } });
 
+    // A same-numbered project in another ledger issues a different order, so an answer cannot cross ledgers.
+    const elsewhere = { ...env, SCRAPLY_DATA_DIR: join(root, "other-ledger") };
+    const otherLedger = async (...argv: string[]) => {
+      let output = "";
+      await runCli(argv, { write: text => { output += text; }, notify: () => undefined, readStdin: async () => "", isTTY: false, env: elsewhere, fetcher: fakeFetch });
+      return JSON.parse(output) as { data: { workOrder: { order: string } } };
+    };
+    await otherLedger("project", "new", "hive-notes", "--seed", "Beekeepers lose track of what they saw in each hive.");
+    expect((await otherLedger("next", "--project", "P1")).data.workOrder.order).not.toBe(frame);
+
     // An answer to an order already answered, or one written for another project, is refused before anything runs.
     stdin = JSON.stringify(framing);
     expect(await scraply("submit", "--project", "P1", "--order", frame)).toMatchObject({ error: { code: "STALE_ORDER" } });

@@ -1,13 +1,10 @@
 import { z } from "zod";
 import type { Source } from "../shared/schemas";
 import type { ExaCategory } from "./exa";
-import type { SourceRoute } from "./source-routes";
 
 export const SearchProviderSchema = z.enum(["exa", "perplexity"]);
 
 export type SearchProvider = z.infer<typeof SearchProviderSchema>;
-export const SearchProviderChoiceSchema = z.enum(["auto", "exa", "perplexity"]);
-export type SearchProviderChoice = z.infer<typeof SearchProviderChoiceSchema>;
 
 export interface SearchOptions {
   numResults?: number;
@@ -20,7 +17,6 @@ export interface SearchOptions {
   startPublishedDate?: string;
   /** Caller metadata; providers send only their supported parameters. */
   provider?: SearchProvider;
-  route?: SourceRoute;
   signal?: AbortSignal;
   timeoutMs?: number;
 }

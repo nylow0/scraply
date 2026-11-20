@@ -18,7 +18,7 @@ describe("ExaClient", () => {
       "electronic patient records small primary care clinics low-resource settings donor-funded pilot ended follow-up record use discontinued continued",
       { category: "publication", includeDomains: ["bmchealthservres.biomedcentral.com", "mhealth.jmir.org"],
         excludeDomains: ["worldmetrics.org", "linkedin.com"], languages: ["en"],
-        maxCharacters: 6000, numResults: 4, route: "studies-official" },
+        maxCharacters: 6000, numResults: 4 },
     )).rejects.toMatchObject({ code: "failed", retryable: false,
       message: 'Exa search failed (400): {"requestId":"clinics-rejection-1","tag":"INVALID_REQUEST","error":"Rejected request using [redacted]"}' });
     expect(dispatches).toBe(1);

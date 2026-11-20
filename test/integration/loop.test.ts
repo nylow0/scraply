@@ -559,6 +559,22 @@ describe("the seed-and-kill-test loop", () => {
     expect(await step()).toMatchObject({ step: "findings", did: expect.stringContaining("club version") });
   });
 
+  test("a pass an older Scraply handed to the agent closes with the notes the agent wrote, not a second write-up", async () => {
+    ledger.createProject("hives", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    ledger.addClaim(1, "need", "Keepers lose notes.", "Fewer than two describe it.");
+    ledger.addIdea({ projectId: 1, title: "Voice log", pitch: "Talk.", claimIds: [1] });
+    ledger.logStep(1, "untestable", "C1", { why: "Only the owner's club could say." });
+    // The old --agent-findings handoff, then the agent's notes written by hand.
+    ledger.logStep(1, "handoff", "I1", { notes: 0 });
+    ledger.addNote(1, "summary", "Nothing could be tested with public evidence.");
+    const variant = ledger.addNote(1, "variant", "Club survey: ask the owner's club directly. Why: public evidence was silent.");
+    expect(await step()).toMatchObject({ step: "findings", status: "needs-you", next: expect.stringContaining(`<${variant.id}>`) });
+    expect(await step()).toMatchObject({ step: "steer", status: "done" });
+    expect(ledger.show(1).notes.filter(note => note.kind === "summary")).toHaveLength(1);
+  });
+
   test("retracting evidence after the write-up changes a claim and reopens it", async () => {
     ledger.createProject("hives", "Anything.");
     ledger.logStep(1, "frame", null, { surveyQueries: [] });

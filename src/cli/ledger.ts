@@ -482,8 +482,9 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
   return {
     close: () => db.close(),
 
+    /** Fails unless the project exists; returns when it was created, which tells it apart from a same-numbered project in another ledger. */
     requireProject(projectId: number) {
-      project(projectId);
+      return { createdAt: project(projectId).created_at };
     },
 
     createProject(name: string, seed: string) {
