@@ -72,6 +72,21 @@ async function advanceUntilBlocked(loop: LoopContext, maxSteps: number) {
   return steps;
 }
 
+/**
+ * The ledger as a step sees it when `scraply experiment run`, which takes no project lock, saves a good run for T1
+ * just after the step first reads the project.
+ */
+function handRunDuringStep() {
+  let saved = false;
+  return new Proxy(ledger, {
+    get: (target, key) => key !== "show" ? Reflect.get(target, key) : (projectId: number) => {
+      const view = target.show(projectId);
+      if (!saved) { saved = true; target.saveRun(1, { command: "bun fixed.ts (in /work/fix)", exitCode: 0, output: "Sanity check passed. Lift 0.12.\n[exit code 0]" }); }
+      return view;
+    },
+  });
+}
+
 describe("the seed-and-kill-test loop", () => {
   test("a desk pass goes from seed to a reviewed verdict, findings, and an accepted variant, with the owner steering", async () => {
     ledger.createProject("hives", "Beekeepers lose track of what they saw in each hive.");
@@ -361,7 +376,7 @@ describe("the seed-and-kill-test loop", () => {
     ledger.saveRun(1, { command: "bun fixed.ts (in /work/fix)", exitCode: 0, output: "Sanity check passed. Lift 0.12.\n[exit code 0]" });
     expect(await step()).toMatchObject({ step: "read" });
     // A late approval does not run the replaced script after all.
-    await expect(runPendingScript(context(), "T1")).rejects.toMatchObject({ code: "ALREADY_RAN" });
+    expect(await runPendingScript(context(), "T1")).toMatchObject({ status: "continue", did: expect.stringContaining("Did not run") });
     expect(runs).toHaveLength(0);
     // The reviewer is told where the hand run's code is, alongside the failed script it replaced.
     let reviewInputs: unknown;
@@ -380,17 +395,25 @@ describe("the seed-and-kill-test loop", () => {
       read: [{ quotes: [] }],
     };
     expect((await advanceUntilBlocked(context(), 3)).at(-1)).toMatchObject({ step: "script", status: "needs-you" });
-    // scraply experiment run takes no project lock, so its run can land just after the step read the project.
-    let saved = false;
-    const racing = new Proxy(ledger, {
-      get: (target, key) => key !== "show" ? Reflect.get(target, key) : (projectId: number) => {
-        const view = target.show(projectId);
-        if (!saved) { saved = true; target.saveRun(1, { command: "bun fixed.ts (in /work/fix)", exitCode: 0, output: "Sanity check passed. Lift 0.12.\n[exit code 0]" }); }
-        return view;
-      },
-    });
+    const racing = handRunDuringStep();
     expect(await step({ ledger: racing })).toMatchObject({ step: "approve", status: "needs-you" });
     expect(await step()).toMatchObject({ step: "read" });
+  });
+
+  test("with --trust, a run saved by hand while a step is deciding is read instead of failing the command", async () => {
+    ledger.createProject("quakes", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    answers = {
+      split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null, setAside: null }],
+      script: [{ files: [{ name: "a.ts", content: "x" }], command: ["bun", "a.ts"], explanation: "Run." }],
+      read: [{ quotes: [] }],
+    };
+    expect((await advanceUntilBlocked(context(), 3)).at(-1)).toMatchObject({ step: "script", status: "needs-you" });
+    const racing = handRunDuringStep();
+    expect((await advanceUntilBlocked(context({ ledger: racing, trust: true }), 2)).map(item => item.step)).toEqual(["run", "read"]);
+    expect(runs).toHaveLength(0);
   });
 
   test("scripts that could not start reach the verdict and the review as diagnostics, never as runs", async () => {

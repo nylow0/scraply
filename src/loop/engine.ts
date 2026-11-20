@@ -495,7 +495,8 @@ export async function runPendingScript(context: LoopContext, testId: string): Pr
   const lastRun = stepLog(context).last("run", testId);
   if (lastRun && lastRun.id > pending.id) throw new CliError("ALREADY_RAN", `The newest script for ${testId} already ran. Run: scraply next --project P${context.projectId}`);
   const replaced = goodRunSinceScript(context, pending, context.ledger.show(context.projectId).sources.filter(source => source.test === testId));
-  if (replaced) throw new CliError("ALREADY_RAN", `${replaced.id}, a good run saved after the newest script for ${testId}, replaced it, so the script is not run. Run: scraply next --project P${context.projectId}`);
+  // Not an error: the run may have landed while this command was running, and the loop goes on to read it.
+  if (replaced) return { step: "run", did: `Did not run the newest script for ${testId}: ${replaced.id}, a good run saved after it, replaced it.`, status: "continue" };
   const detail = z.object({ dir: z.string(), command: z.array(z.string()) }).parse(pending.detail);
   // Refuse a test retracted since its script was written before running anything.
   context.ledger.requireExperiment(parseId("test", testId));
