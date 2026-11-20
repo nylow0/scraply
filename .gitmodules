@@ -1,3 +1,0 @@
-[submodule "runtime/vendor/openai-codex"]
-	path = runtime/vendor/openai-codex
-	url = https://github.com/openai/codex.git

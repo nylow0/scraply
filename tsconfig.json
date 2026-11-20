@@ -15,19 +15,11 @@
     "types": [
       "bun-types",
       "node"
-    ],
-    "baseUrl": ".",
-    "paths": {
-      "@shared/*": [
-        "src/shared/*"
-      ]
-    }
+    ]
   },
   "include": [
     "src/**/*",
-    "test/**/*",
-    "scripts/**/*.ts",
-    "runtime/tests/**/*.ts"
+    "test/**/*"
   ],
   "exclude": [
     "node_modules",

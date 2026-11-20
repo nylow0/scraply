@@ -9,4 +9,4 @@ Judge the claim against its kill condition and the test's prediction. The inputs
 - **quotes:** the IDs the verdict rests on. A provisional verdict needs at least one quote found after the test was written; on a need, firsthand or measured quotes from two different speakers; on an experiment, output from one of its runs. A kill can rest on finding nothing when the work was done.
 - **note:** how the cited quotes bear on the claim, in your own words, with no quotation marks and no facts that are not in the cited quotes. For an experiment, say whether the sanity check passed, how the result compares with the control, and whether the held-out data replicated it.
 
-When a previous attempt was refused, the refusal is in the inputs. Fix what it names, or record unclear.
+When `submit` refuses a verdict, its error names the ledger rule it broke. Fix what it names and submit again, or record unclear.

@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { z } from "zod";
 import { CLAIM_KINDS, QUOTE_KINDS, parseId, type FetchedSource, type Ledger } from "../cli/ledger";
@@ -11,14 +11,15 @@ import { headAndTail, type Think } from "./think";
  * ledger's step log records which steps ran on what, so a project can stop and resume anywhere,
  * and an agent or the owner can do any step by hand in between.
  *
- * frame -> survey -> (owner answers questions) -> split -> for each claim:
+ * frame -> survey (search, then read) -> (owner answers questions) -> split -> for each claim:
  *   design -> desk: gather, read | experiment: script, (owner approves), run, read -> verdict -> review
- * -> findings and variants (by the model, or by the calling agent with `agentFindings`)
- * -> the owner accepts a variant, which splits into new claims, and so on.
+ * -> findings and variants -> the owner accepts a variant, which splits into new claims, and so on.
  *
- * Every write goes through the ledger, so the model is held to the same rules as anyone else:
- * quotes must be verbatim, support needs new evidence, a need needs two speakers, and a verdict
- * only counts once a separate review call upholds it.
+ * The calling agent does the thinking (see `think.ts`): a step calls `context.think` at most once, and only after
+ * every side effect it needs has been logged as its own step, so a step that stops for thinking repeats nothing
+ * when the answer comes back. Every write goes through the ledger, so the agent is held to the same rules as
+ * anyone else: quotes must be verbatim, support needs new evidence, a need needs two speakers, and a verdict only
+ * counts once an independent review upholds it.
  */
 
 type View = ReturnType<Ledger["show"]>;
@@ -38,12 +39,10 @@ export interface LoopContext {
   resultsPerSearch: number;
   /** Programs the experiment scripts may use, such as "bun 1.3" or "uv". */
   tools: readonly string[];
-  /** Run model-written experiments without stopping for the owner to read them first. */
+  /** Run agent-written experiments without stopping for the owner to read them first. */
   trust: boolean;
   /** Go on even though the owner has not answered the framing questions. */
   skipQuestions: boolean;
-  /** Stop when the pass is finished so the calling agent writes the findings and variants, instead of the model. */
-  agentFindings: boolean;
   notify: (text: string) => void;
 }
 
@@ -57,22 +56,21 @@ export interface StepResult {
 const AUTHOR = "scraply-author";
 const REVIEWER = "scraply-reviewer";
 const MAX_RUNS = 4;
-/** How much of one program file a later step sees; a longer file keeps its start and end with a marker between. */
-const ATTEMPT_FILE_CHARS = 20_000;
 const MAX_TESTS_PER_CLAIM = 2;
-const READ_SOURCE_CHARS = 25_000;
-const READ_BATCH_CHARS = 75_000;
-/** Quotes from earlier work a verdict or the findings see beside their own; older ones beyond it are left out. */
-const CONTEXT_QUOTE_BYTES = 500_000;
+/**
+ * Quotes from earlier work a verdict or the findings see beside their own; older ones are left out, and the
+ * agent finds them with `scraply show`. Kept small so one work order fits in a tool result.
+ */
+const CONTEXT_QUOTE_BYTES = 40_000;
 /** How much of one quote the findings step sees; it cites quotes by ID, so the text is context. */
 const FINDINGS_QUOTE_CHARS = 2_000;
-/** Each run's output the findings step sees: up to twelve tests stay well under the worker's 2 MiB input. */
-const FINDINGS_RUN_CHARS = 40_000;
+/** How much of a failed run's output the next script attempt sees inline; the whole run is a source. */
+const ATTEMPT_OUTPUT_CHARS = 6_000;
 const SURVEY_SOURCES = 8;
-/** Uncited sources the test read, shown in full to its reviewer beside the cited ones. */
+/** Uncited sources the test read, given to its reviewer beside the cited ones. */
 const REVIEW_UNCITED_SOURCES = 6;
 
-// A quote is a sentence or two; the ceiling also stops a runaway answer before the worker's output limit does.
+// A quote is a sentence or two; the ceiling also stops a runaway answer.
 const QuoteSchema = z.object({ source: z.string(), text: z.string().max(1_500), speaker: z.string().max(200), kind: z.enum(QUOTE_KINDS) }).strict();
 const FrameSchema = z.object({
   framing: z.string().min(1), surveyQueries: z.array(z.string().min(1)).max(3),
@@ -131,18 +129,19 @@ function stepLog(context: LoopContext) {
 const live = <T extends { retracted?: string }>(items: readonly T[]) => items.filter(item => !item.retracted);
 const today = () => new Date().toISOString().slice(0, 10);
 
+/** The paths of a script step's files that still exist; the agent reads them from disk. */
+function scriptFiles(detail: unknown) {
+  const written = z.object({ dir: z.string(), files: z.array(z.string()) }).safeParse(detail);
+  return written.success ? written.data.files.map(name => join(written.data.dir, name)).filter(path => existsSync(path)) : [];
+}
+
 /** The files of the script that produced each run of a test, by run source ID. */
 function runCode(context: LoopContext, testId: string) {
   const steps = context.ledger.steps(context.projectId);
   const scripts = steps.filter(item => item.step === "script" && item.target === testId);
   return steps.filter(item => item.step === "run" && item.target === testId).map((run, index) => {
-    const written = z.object({ dir: z.string(), files: z.array(z.string()) }).safeParse(scripts[index]?.detail);
-    const source = z.object({ source: z.string() }).safeParse(run.detail);
-    return {
-      run: source.success ? source.data.source : null,
-      files: written.success ? written.data.files.filter(name => existsSync(`${written.data.dir}/${name}`))
-        .map(name => ({ name, content: headAndTail(readFileSync(`${written.data.dir}/${name}`, "utf8"), ATTEMPT_FILE_CHARS) })) : [],
-    };
+    const detail = z.object({ source: z.string(), launchFailed: z.string() }).partial().parse(run.detail);
+    return { run: detail.source ?? null, files: scriptFiles(scripts[index]?.detail), ...(detail.launchFailed ? { couldNotStart: detail.launchFailed } : {}) };
   });
 }
 
@@ -163,6 +162,19 @@ function runSucceeded(context: LoopContext, run: { id: string; exitCode?: number
   return !/sanity check failed|setup failed/i.test(fullText(context, run.id));
 }
 
+/**
+ * A good run saved after the test's newest script, such as one run by hand, which makes running that script
+ * unnecessary. Scripts logged before runsBefore existed fall back to timestamps. The caller passes the script and
+ * the test's runs it already read, so a run saved meanwhile cannot change the decision halfway through a step.
+ */
+function goodRunSinceScript(context: LoopContext, script: { detail: unknown; at: string } | undefined, runs: View["sources"]) {
+  const newest = runs.at(-1);
+  if (!script || !newest) return undefined;
+  const before = z.object({ runsBefore: z.number() }).safeParse(script.detail);
+  const savedAfter = before.success ? runs.length > before.data.runsBefore : newest.fetchedAt > script.at;
+  return savedAfter && runSucceeded(context, newest) ? newest : undefined;
+}
+
 /** The claim's newest test, if no verdict answers it yet. A verdict that names no test answers every test written before it. */
 function openTest(claim: ClaimView): TestView | undefined {
   const test = live(claim.tests).at(-1);
@@ -180,53 +192,28 @@ function ideaClaims(view: View) {
   return idea ? idea.claims.map(link => view.claims.find(claim => claim.id === link.id)!).filter(claim => !claim.retracted) : [];
 }
 
-/** Save model-proposed quotes through the ledger. A quote that is not verbatim, or not from an allowed source, is dropped and counted. */
+/**
+ * Save the agent's quotes through the ledger. A quote that is not verbatim, or not from a source the step offered,
+ * is dropped and reported with the ledger's reason, so the agent can fix it with `scraply quote add`.
+ */
 function saveQuotes(context: LoopContext, quotes: readonly z.infer<typeof QuoteSchema>[], allowed: ReadonlySet<string>) {
   const saved: string[] = [];
-  let dropped = 0;
+  const dropped: { text: string; why: string }[] = [];
   for (const quote of quotes) {
     try {
-      // A part of a long run, such as S7.2, is quoted as its run, S7.
-      const source = quote.source.trim().toUpperCase().replace(/\.\d+$/, "");
-      if (!allowed.has(source)) throw new Error("source not offered");
+      const source = quote.source.trim().toUpperCase();
+      if (!allowed.has(source)) throw new Error(`${source} is not one of this step's sources.`);
       saved.push(context.ledger.addQuote(parseId("source", source), quote.text, quote.speaker, quote.kind).id);
-    } catch {
-      dropped += 1;
+    } catch (error) {
+      dropped.push({ text: quote.text.slice(0, 120), why: error instanceof Error ? error.message : "refused" });
     }
   }
   return { saved, dropped };
 }
 
-/**
- * Sources as evidence. A page is cut to a size one model call can read in full; an experiment run is given whole,
- * in parts of that size, because its measurements are often printed last. Evidence IDs must be unique, so a part
- * is S7.1, S7.2, and so on; `source` names the saved source either way.
- */
-function sourceEvidence(context: LoopContext, sourceIds: readonly string[]) {
-  return sourceIds.flatMap(id => {
-    const source = context.ledger.readSource(parseId("source", id), 0);
-    if (!source.command) return [{ id, source: id, content: { title: source.title, url: source.url, text: source.text.slice(0, READ_SOURCE_CHARS) } }];
-    const text = fullText(context, id);
-    const parts = Math.max(1, Math.ceil(text.length / READ_SOURCE_CHARS));
-    return Array.from({ length: parts }, (_, index) => ({
-      id: parts > 1 ? `${id}.${index + 1}` : id, source: id, content: {
-        title: source.title, url: source.url, command: source.command, exitCode: source.exitCode,
-        ...(parts > 1 ? { part: `${index + 1} of ${parts}` } : {}), text: text.slice(index * READ_SOURCE_CHARS, (index + 1) * READ_SOURCE_CHARS),
-      },
-    }));
-  });
-}
-
-function batches<T extends { content: { text: string } }>(items: readonly T[]) {
-  const groups: T[][] = [];
-  let size = 0;
-  for (const item of items) {
-    if (!groups.length || size + item.content.text.length > READ_BATCH_CHARS) { groups.push([]); size = 0; }
-    groups.at(-1)!.push(item);
-    size += item.content.text.length;
-  }
-  return groups;
-}
+/** How a step reports dropped quotes in its result. */
+const droppedNote = (dropped: readonly { text: string; why: string }[]) =>
+  dropped.length ? ` Dropped ${dropped.length} quote(s): ${dropped.map(item => `"${item.text}" (${item.why})`).join("; ")}` : "";
 
 async function search(context: LoopContext, query: string) {
   if (!context.searchWeb) return null;
@@ -238,7 +225,7 @@ async function search(context: LoopContext, query: string) {
   }
 }
 
-/** The newest items whose JSON fits in `maxBytes`, in their original order; the worker takes at most 2 MiB a call. */
+/** The newest items whose JSON fits in `maxBytes`, in their original order. */
 function newestWithin<T>(items: readonly T[], maxBytes: number) {
   const kept: T[] = [];
   let size = 0;
@@ -276,28 +263,36 @@ async function frame(context: LoopContext, view: View): Promise<StepResult> {
   return { step: "frame", did: `Framed the seed${output.questions.length ? ` and asked ${output.questions.length} question(s)` : ""}.`, status: "continue" };
 }
 
-async function survey(context: LoopContext, view: View): Promise<StepResult> {
+/** Run the survey's searches once and log them, so the survey's thinking can stop and resume without searching again. */
+async function surveySearch(context: LoopContext): Promise<StepResult> {
   const framed = z.object({ surveyQueries: z.array(z.string()) }).parse(stepLog(context).last("frame")!.detail);
   const searches = [];
   for (const query of framed.surveyQueries) {
-    context.notify(`Searching: ${query}`);
+    if (context.searchWeb) context.notify(`Searching: ${query}`);
     const result = await search(context, query);
-    if (result) searches.push(result);
+    if (result) searches.push(result.id);
   }
-  const sourceIds = searches.flatMap(item => item.sources.filter(source => source.status === "ok" && source.kind !== "excerpt").map(source => source.id)).slice(0, SURVEY_SOURCES);
+  context.ledger.logStep(context.projectId, "survey-search", null, { searches });
+  return { step: "survey", did: `Ran ${searches.length} survey search(es).`, status: "continue" };
+}
+
+async function survey(context: LoopContext, view: View): Promise<StepResult> {
+  const searches = z.object({ searches: z.array(z.string()) }).parse(stepLog(context).last("survey-search")!.detail).searches;
+  const sourceIds = view.sources.filter(source => source.search && searches.includes(source.search) && source.status === "ok" && source.kind !== "excerpt")
+    .map(source => source.id).slice(0, SURVEY_SOURCES);
   if (!sourceIds.length) {
-    context.ledger.logStep(context.projectId, "survey", null, { searches: searches.map(item => item.id), skipped: context.searchWeb ? "no pages found" : "no search key" });
+    context.ledger.logStep(context.projectId, "survey", null, { searches, skipped: context.searchWeb ? "no pages found" : "no search key" });
     return { step: "survey", did: context.searchWeb ? "Surveyed what exists; the searches found no readable pages." : "Skipped the survey: no search key is saved.", status: "continue" };
   }
   const output = await context.think({
     step: "survey", goal: "Say what already exists for this seed, from the evidence.", schema: SurveySchema,
     inputs: { seed: view.project.seed, framing: live(view.notes).filter(note => note.kind === "framing").map(note => note.text) },
-    evidence: sourceEvidence(context, sourceIds),
+    sources: sourceIds,
   });
   const quotes = saveQuotes(context, output.quotes, new Set(sourceIds));
   context.ledger.addNote(context.projectId, "prior-art", output.priorArt, quotes.saved.map(id => parseId("quote", id)));
-  context.ledger.logStep(context.projectId, "survey", null, { searches: searches.map(item => item.id), quotes: quotes.saved, dropped: quotes.dropped });
-  return { step: "survey", did: `Surveyed what exists from ${sourceIds.length} page(s); saved ${quotes.saved.length} quote(s).`, status: "continue" };
+  context.ledger.logStep(context.projectId, "survey", null, { searches, quotes: quotes.saved, dropped: quotes.dropped.length });
+  return { step: "survey", did: `Surveyed what exists from ${sourceIds.length} page(s); saved ${quotes.saved.length} quote(s).${droppedNote(quotes.dropped)}`, status: "continue" };
 }
 
 async function split(context: LoopContext, view: View, variant?: { note: string; title: string; pitch: string; why: string }): Promise<StepResult> {
@@ -319,7 +314,7 @@ async function split(context: LoopContext, view: View, variant?: { note: string;
   const reused = output.reuse.map(id => id.trim().toUpperCase()).filter(id => previous.some(claim => claim.id === id));
   const created = output.claims.map(claim => context.ledger.addClaim(context.projectId, claim.kind, claim.statement, claim.killIf).id);
   const claimIds = [...reused, ...created];
-  if (!claimIds.length) throw new CliError("MODEL_FAILED", "The split step returned no claims. Run the command again.");
+  if (!claimIds.length) throw new CliError("BAD_ANSWER", "The split names no claims: add new claims or reuse earlier ones, and submit again.", 2);
   const idea = context.ledger.addIdea({
     projectId: context.projectId, title: output.idea.title, pitch: output.idea.pitch, claimIds: claimIds.map(id => parseId("claim", id)),
     ...(variant && currentIdea(view) ? { revisesId: parseId("idea", currentIdea(view)!.id) } : {}),
@@ -329,70 +324,56 @@ async function split(context: LoopContext, view: View, variant?: { note: string;
 }
 
 async function design(context: LoopContext, view: View, testable: readonly ClaimView[]): Promise<StepResult> {
-  let refusal: string | undefined;
-  let output: z.infer<typeof DesignSchema> | undefined;
   const blocks = stepLog(context).steps.filter(item => item.step === "blocked");
   /** What the owner was asked for this claim, and the newest constraint note at the time. */
   const requests = (claimId: string) => blocks.filter(item => item.target?.trim().toUpperCase() === claimId)
     .map(item => z.object({ needsOwner: z.string(), notes: z.number() }).parse(item.detail));
   const answered = (claimId: string) => requests(claimId)
     .some(request => live(view.notes).some(note => note.kind === "constraint" && parseId("note", note.id) > request.notes));
-  for (let attempt = 0; attempt < 2 && !output; attempt += 1) {
-    const proposed = await context.think({
-      step: "design", goal: "Pick the cheapest decisive open claim and write its test before looking.", schema: DesignSchema,
-      inputs: {
-        idea: currentIdea(view), constraints: constraints(view), tools: context.tools, searchAvailable: Boolean(context.searchWeb),
-        searchBudget: { maxQueries: 5, resultsPerQuery: context.resultsPerSearch }, today: today(),
-        ownerMaterial: ownerSources(view).map(source => ({ id: source.id, title: source.title, chars: source.chars })),
-        claims: ideaClaims(view).map(claim => ({
-          id: claim.id, kind: claim.kind, statement: claim.statement, killIf: claim.killIf, status: claim.status, open: testable.some(item => item.id === claim.id),
-          earlierTests: claim.tests.map(test => ({ kind: test.kind, method: test.method, prediction: test.prediction })),
-          verdicts: claim.verdicts.map(verdict => ({ result: verdict.result, note: verdict.note, reviews: verdict.reviews.map(review => ({ result: review.result, note: review.note })) })),
-          askedOwner: requests(claim.id).map(item => item.needsOwner),
-        })),
-        ...(refusal ? { previousRefusal: refusal } : {}),
-      },
+  const output = await context.think({
+    step: "design", goal: `Pick the cheapest decisive open claim (${testable.map(item => item.id).join(", ")}) and write its test before looking.`, schema: DesignSchema,
+    inputs: {
+      idea: currentIdea(view), constraints: constraints(view), tools: context.tools, searchAvailable: Boolean(context.searchWeb),
+      searchBudget: { maxQueries: 5, resultsPerQuery: context.resultsPerSearch }, today: today(),
+      ownerMaterial: ownerSources(view).map(source => ({ id: source.id, title: source.title, chars: source.chars })),
+      claims: ideaClaims(view).map(claim => ({
+        id: claim.id, kind: claim.kind, statement: claim.statement, killIf: claim.killIf, status: claim.status, open: testable.some(item => item.id === claim.id),
+        earlierTests: claim.tests.map(test => ({ kind: test.kind, method: test.method, prediction: test.prediction })),
+        verdicts: claim.verdicts.map(verdict => ({ result: verdict.result, note: verdict.note, reviews: verdict.reviews.map(review => ({ result: review.result, note: review.note })) })),
+        askedOwner: requests(claim.id).map(item => item.needsOwner),
+      })),
+    },
+  });
+  // A refused design goes back to the agent, which fixes it and submits the same work order again.
+  const refuse = (why: string) => { throw new CliError("BAD_ANSWER", `${why} Fix the design and submit it again.`, 2); };
+  const claimId = output.claim.trim().toUpperCase();
+  const claim = testable.find(item => item.id === claimId);
+  if (!claim) return refuse(`Name one of the open claims: ${testable.map(item => item.id).join(", ")}.`);
+  if (output.setAside) {
+    // Only the owner's answer to this claim's own request can set it aside, so a hard claim is never skipped on the agent's say-so.
+    if (!answered(claimId)) return refuse("setAside is only for an open claim whose request (askedOwner) the owner has answered by saying they cannot provide it.");
+    context.ledger.logStep(context.projectId, "untestable", claimId, { why: output.setAside });
+    return { step: "design", status: "continue", did: `Set ${claimId} aside: it cannot be tested with what the owner has (${output.setAside}).` };
+  }
+  if (output.needsOwner) {
+    // The decisive test needs something only the owner can give; say exactly what instead of running a hollow test.
+    context.ledger.logStep(context.projectId, "blocked", claimId, {
+      needsOwner: output.needsOwner,
+      notes: Math.max(...live(view.notes).filter(note => note.kind === "constraint").map(note => parseId("note", note.id)), 0),
+      files: view.sources.filter(source => source.via === "owner").length,
     });
-    // Whatever the answer is, it is about one of the open claims.
-    const claimId = proposed.claim.trim().toUpperCase();
-    if (!testable.some(item => item.id === claimId)) {
-      refusal = `Name one of the open claims: ${testable.map(item => item.id).join(", ")}.`;
-      continue;
-    }
-    if (proposed.setAside) {
-      // Only the owner's answer to this claim's own request can set it aside, so a hard claim is never skipped on the model's say-so.
-      if (answered(claimId)) {
-        context.ledger.logStep(context.projectId, "untestable", claimId, { why: proposed.setAside });
-        return { step: "design", status: "continue", did: `Set ${claimId} aside: it cannot be tested with what the owner has (${proposed.setAside}).` };
-      }
-      refusal = "setAside is only for an open claim whose request (askedOwner) the owner has answered by saying they cannot provide it.";
-      continue;
-    }
-    if (proposed.needsOwner) {
-      // The decisive test needs something only the owner can give; say exactly what instead of running a hollow test.
-      context.ledger.logStep(context.projectId, "blocked", claimId, {
-        needsOwner: proposed.needsOwner,
-        notes: Math.max(...live(view.notes).filter(note => note.kind === "constraint").map(note => parseId("note", note.id)), 0),
-        files: view.sources.filter(source => source.via === "owner").length,
-      });
-      return {
-        step: "design", status: "needs-you", did: `The next decisive test needs you: ${proposed.needsOwner}`,
-        next: `Provide it, as an answer (scraply note add --project ${view.project.id} --kind constraint --text "...") or a file (scraply source add --project ${view.project.id} --file <path> --title "..." --origin owner), then run scraply auto again.`,
-      };
-    }
-    const experiment = proposed.kind === "experiment" && proposed.sanity && proposed.control && proposed.holdout;
-    if (!proposed.method.trim() || !proposed.prediction.trim() || !proposed.stopWhen.trim()) refusal = "A test needs a method, a prediction, and a stop condition, or set needsOwner.";
-    else if (proposed.kind === "experiment" && !experiment) refusal = "An experiment needs sanity, control, and holdout, each filled in.";
-    else if (!experiment && !proposed.queries.length) refusal = "A desk test needs at least one search query. Write queries, design an experiment, or set needsOwner.";
-    else if (!experiment && !context.searchWeb) refusal = "No web search is available, so the test must be an experiment, or set needsOwner.";
-    else output = proposed;
+    return {
+      step: "design", status: "needs-you", did: `The next decisive test needs you: ${output.needsOwner}`,
+      next: `Provide it, as an answer (scraply note add --project ${view.project.id} --kind constraint --text "...") or a file (scraply source add --project ${view.project.id} --file <path> --title "..." --origin owner), then run scraply next again.`,
+    };
   }
-  if (!output) {
-    if (!context.searchWeb) throw new CliError("NO_KEY", "The next test needs web search, and no search provider has a key. Save one with: scraply key set exa");
-    throw new CliError("MODEL_FAILED", `The design step could not produce a runnable test (${refusal}). Run the command again.`);
-  }
-  const claim = testable.find(item => item.id === output.claim.trim().toUpperCase())!;
   const experiment = output.kind === "experiment" && output.sanity && output.control && output.holdout;
+  if (!output.method.trim() || !output.prediction.trim() || !output.stopWhen.trim()) return refuse("A test needs a method, a prediction, and a stop condition, or set needsOwner.");
+  if (output.kind === "experiment" && !experiment) return refuse("An experiment needs sanity, control, and holdout, each filled in.");
+  if (!experiment && !context.searchWeb) {
+    throw new CliError("NO_KEY", "A desk test needs web search, and no search provider has a key. Save one with: scraply key set exa, or design an experiment instead.");
+  }
+  if (!experiment && !output.queries.length) return refuse("A desk test needs at least one search query. Write queries, design an experiment, or set needsOwner.");
   const test = context.ledger.addTest(parseId("claim", claim.id), {
     method: output.method, prediction: output.prediction, stopWhen: output.stopWhen,
     ...(experiment
@@ -407,7 +388,7 @@ async function gather(context: LoopContext, test: TestView): Promise<StepResult>
   const queries = z.object({ queries: z.array(z.string()) }).parse(test.plan).queries;
   const searches = [];
   for (const query of queries) {
-    context.notify(`Searching: ${query}`);
+    if (context.searchWeb) context.notify(`Searching: ${query}`);
     const result = await search(context, query);
     if (result) searches.push(result.id);
   }
@@ -416,78 +397,55 @@ async function gather(context: LoopContext, test: TestView): Promise<StepResult>
 }
 
 async function read(context: LoopContext, view: View, claim: ClaimView, test: TestView, sourceIds: readonly string[]): Promise<StepResult> {
-  const evidence = sourceEvidence(context, sourceIds);
-  const ask = (group: typeof evidence) => context.think({
-    step: "read", goal: `Quote everything in these sources that bears on ${claim.id}, for or against.`, schema: ReadSchema,
+  const output = await context.think({
+    step: "read", goal: `Quote everything in ${test.id}'s sources that bears on ${claim.id}, for or against.`, schema: ReadSchema,
     inputs: { claim: { id: claim.id, kind: claim.kind, statement: claim.statement, killIf: claim.killIf }, test, idea: currentIdea(view) },
-    evidence: group,
+    sources: sourceIds,
   });
-  // A batch whose call fails is read again one source at a time, so one page the model cannot answer for
-  // never blocks the step; a source that still fails is left unread, and the verdict is told so.
-  const answers: { group: typeof evidence; quotes: z.infer<typeof ReadSchema>["quotes"] }[] = [];
-  const unread = new Set<string>();
-  let failure: CliError | undefined;
-  const failed = (group: typeof evidence, error: unknown) => {
-    if (!(error instanceof CliError && error.code === "MODEL_FAILED")) throw error;
-    context.notify(`Reading ${group.map(item => item.id).join(", ")} failed: ${error.message}`);
-    failure = error;
-  };
-  for (const group of batches(evidence)) {
-    try {
-      answers.push({ group, quotes: (await ask(group)).quotes });
-      continue;
-    } catch (error) { failed(group, error); }
-    if (group.length === 1) { unread.add(group[0]!.source); continue; }
-    for (const item of group) {
-      try { answers.push({ group: [item], quotes: (await ask([item])).quotes }); }
-      catch (error) { failed([item], error); unread.add(item.source); }
-    }
-  }
-  // Stop only when nothing could be read; a source with any part unread is reported as unread.
-  if (failure && !answers.length) throw failure;
-  const saved: string[] = [];
+  const quotes = { saved: [] as string[], dropped: [] as { text: string; why: string }[] };
   const bearings: { quote: string; bearing: string }[] = [];
-  let dropped = 0;
-  for (const answer of answers) {
-    for (const quote of answer.quotes) {
-      const result = saveQuotes(context, [quote], new Set(answer.group.map(item => item.source)));
-      saved.push(...result.saved);
-      bearings.push(...result.saved.map(id => ({ quote: id, bearing: quote.bearing })));
-      dropped += result.dropped;
-    }
+  for (const quote of output.quotes) {
+    const result = saveQuotes(context, [quote], new Set(sourceIds));
+    quotes.saved.push(...result.saved);
+    quotes.dropped.push(...result.dropped);
+    bearings.push(...result.saved.map(id => ({ quote: id, bearing: quote.bearing })));
   }
-  context.ledger.logStep(context.projectId, "read", test.id, { sources: sourceIds, quotes: saved, bearings, dropped, unread: [...unread] });
+  context.ledger.logStep(context.projectId, "read", test.id, { sources: sourceIds, quotes: quotes.saved, bearings, dropped: quotes.dropped.length, unread: [] });
   return {
     step: "read", status: "continue",
-    did: `Read ${sourceIds.length - unread.size} source(s) for ${test.id}; saved ${saved.length} quote(s)${dropped ? `, dropped ${dropped} not found word for word` : ""}${unread.size ? `; could not read ${[...unread].join(", ")}` : ""}.`,
+    did: `Read ${sourceIds.length} source(s) for ${test.id}; saved ${quotes.saved.length} quote(s).${droppedNote(quotes.dropped)}`,
   };
 }
 
-async function script(context: LoopContext, view: View, claim: ClaimView, test: TestView, runs: readonly View["sources"][number][]): Promise<StepResult> {
+/**
+ * Each time one of a test's scripts was run, in order: the run's saved output, or why the program could not start.
+ * A program that never started saved no source, so it is never evidence.
+ */
+function runAttempts(context: LoopContext, view: View, testId: string) {
+  return stepLog(context).steps.filter(item => item.step === "run" && item.target === testId).map(item => {
+    const detail = z.object({ source: z.string(), launchFailed: z.string() }).partial().parse(item.detail);
+    return { source: view.sources.find(source => source.id === detail.source), launchFailed: detail.launchFailed };
+  });
+}
+
+async function script(context: LoopContext, view: View, claim: ClaimView, test: TestView, attempts: ReturnType<typeof runAttempts>): Promise<StepResult> {
   const scripts = stepLog(context).steps.filter(item => item.step === "script" && item.target === test.id);
   const attempt = scripts.length + 1;
   // Each earlier attempt with its own code and what it printed, so a fix starts from the code that failed.
-  const earlierAttempts = runs.map((run, index) => {
-    const written = z.object({ dir: z.string(), files: z.array(z.string()) }).safeParse(scripts[index]?.detail);
-    return {
-      command: run.command, exitCode: run.exitCode,
-      files: written.success ? written.data.files.filter(name => existsSync(`${written.data.dir}/${name}`))
-        .map(name => ({ name, content: headAndTail(readFileSync(`${written.data.dir}/${name}`, "utf8"), ATTEMPT_FILE_CHARS) })) : [],
-      outputTail: context.ledger.readSource(parseId("source", run.id), Math.max(0, run.chars - 6_000)).text,
-    };
-  });
-  // Code that already worked for earlier experiments in this project, so data access is not rediscovered.
+  const earlierAttempts = attempts.map(({ source, launchFailed }, index) => source
+    ? {
+      run: source.id, command: source.command, exitCode: source.exitCode, files: scriptFiles(scripts[index]?.detail),
+      outputTail: context.ledger.readSource(parseId("source", source.id), Math.max(0, source.chars - ATTEMPT_OUTPUT_CHARS)).text,
+    }
+    : { couldNotStart: launchFailed ?? "The run saved no output.", files: scriptFiles(scripts[index]?.detail) });
+  // Code that already worked for earlier experiments in this project, so data access is not rediscovered. Files are
+  // given by path; the agent reads them from disk.
   const workingCode = stepLog(context).steps.filter(item => item.step === "run" && item.target !== test.id)
     .filter(item => z.object({ source: z.string() }).safeParse(item.detail).success)
     .map(item => ({ target: item.target, source: z.object({ source: z.string() }).parse(item.detail).source }))
     .filter(item => { const run = view.sources.find(source => source.id === item.source); return run !== undefined && runSucceeded(context, run); })
     .slice(-2)
-    .flatMap(item => {
-      const scriptStep = stepLog(context).steps.filter(step => step.step === "script" && step.target === item.target).at(-1);
-      const written = z.object({ dir: z.string(), files: z.array(z.string()) }).safeParse(scriptStep?.detail);
-      return written.success ? written.data.files.filter(name => existsSync(`${written.data.dir}/${name}`))
-        .map(name => ({ test: item.target, name, content: headAndTail(readFileSync(`${written.data.dir}/${name}`, "utf8"), ATTEMPT_FILE_CHARS) })) : [];
-    });
+    .map(item => ({ test: item.target, files: scriptFiles(stepLog(context).steps.filter(step => step.step === "script" && step.target === item.target).at(-1)?.detail) }));
   const output = await context.think({
     step: "script", goal: `Write the program that runs experiment ${test.id}.`, schema: ScriptSchema,
     inputs: {
@@ -497,21 +455,36 @@ async function script(context: LoopContext, view: View, claim: ClaimView, test: 
     },
   });
   const dir = join(context.workDir, test.id, `attempt-${attempt}`);
+  // Files stay inside the attempt folder: relative paths only, no climbing out. Every path is checked before anything
+  // is written, and the folder starts empty, so a refused answer leaves nothing behind for the next one to mix with.
+  const targets = output.files.map(file => ({ ...file, target: resolve(dir, file.name) }));
+  const outside = targets.find(file => !file.target.startsWith(`${resolve(dir)}${sep}`));
+  if (outside) throw new CliError("BAD_ANSWER", `The script named a file outside its folder (${outside.name}). Use relative paths and submit again.`, 2);
+  // Two files cannot share a path, a file cannot also be a folder of another, and owner/ holds the owner's files.
+  // Compared without case, since Windows treats OWNER/ and owner/ as one folder.
+  const taken = [resolve(dir, "owner"), ...targets.map(file => file.target)].map(path => path.toLowerCase());
+  const clash = targets.find((file, index) => {
+    const path = file.target.toLowerCase();
+    return taken.some((other, at) => at !== index + 1 && (other === path || other.startsWith(`${path}${sep}`) || path.startsWith(`${other}${sep}`)));
+  });
+  if (clash) throw new CliError("BAD_ANSWER", `The script's file ${clash.name} clashes with another file or with the owner/ folder. Give each file its own path and submit again.`, 2);
+  rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(dir, "owner"), { recursive: true });
   for (const source of ownerSources(view)) writeFileSync(join(dir, "owner", `${source.id}.txt`), fullText(context, source.id));
-  // Files stay inside the attempt folder: relative paths only, no climbing out.
-  for (const file of output.files) {
-    const target = resolve(dir, file.name);
-    if (!target.startsWith(`${resolve(dir)}${sep}`)) throw new CliError("MODEL_FAILED", `The script named a file outside its folder (${file.name}). Run the command again.`);
-    mkdirSync(dirname(target), { recursive: true });
-    writeFileSync(target, file.content);
+  for (const file of targets) {
+    mkdirSync(dirname(file.target), { recursive: true });
+    writeFileSync(file.target, file.content);
   }
-  context.ledger.logStep(context.projectId, "script", test.id, { attempt, dir, command: output.command, files: output.files.map(file => file.name), explanation: output.explanation });
+  // runsBefore orders runs saved later by hand against this script without trusting clocks.
+  context.ledger.logStep(context.projectId, "script", test.id, {
+    attempt, dir, command: output.command, files: output.files.map(file => file.name), explanation: output.explanation,
+    runsBefore: view.sources.filter(source => source.test === test.id).length,
+  });
   return context.trust
     ? { step: "script", did: `Wrote attempt ${attempt} for ${test.id} in ${dir}.`, status: "continue" }
     : {
       step: "script", did: `Wrote attempt ${attempt} for ${test.id} in ${dir}: ${output.command.join(" ")}`, status: "needs-you",
-      next: `Read the files in ${dir}, then run them with: scraply experiment approve --project ${view.project.id} --test ${test.id}`,
+      next: `Show the owner the files in ${dir}: what the program fetches, what it runs, and where it writes. Only once they agree, run it with: scraply experiment approve --project ${view.project.id} --test ${test.id}`,
     };
 }
 
@@ -521,11 +494,25 @@ export async function runPendingScript(context: LoopContext, testId: string): Pr
   if (!pending) throw new CliError("NO_SCRIPT", `${testId} has no script to run yet. Run: scraply next --project P${context.projectId}`);
   const lastRun = stepLog(context).last("run", testId);
   if (lastRun && lastRun.id > pending.id) throw new CliError("ALREADY_RAN", `The newest script for ${testId} already ran. Run: scraply next --project P${context.projectId}`);
+  const replaced = goodRunSinceScript(context, pending, context.ledger.show(context.projectId).sources.filter(source => source.test === testId));
+  // Not an error: the run may have landed while this command was running, and the loop goes on to read it.
+  if (replaced) return { step: "run", did: `Did not run the newest script for ${testId}: ${replaced.id}, a good run saved after it, replaced it.`, status: "continue" };
   const detail = z.object({ dir: z.string(), command: z.array(z.string()) }).parse(pending.detail);
   // Refuse a test retracted since its script was written before running anything.
   context.ledger.requireExperiment(parseId("test", testId));
   context.notify(`Running in ${detail.dir}: ${detail.command.join(" ")}`);
-  const run = await context.runCommand(detail.command, detail.dir);
+  let run;
+  try {
+    run = await context.runCommand(detail.command, detail.dir);
+  } catch (error) {
+    if (!(error instanceof CliError && error.code === "RUN_FAILED")) throw error;
+    // A program that cannot even start is a failed attempt, so the next step writes a repaired script instead of
+    // waiting for approval of this one again. Nothing ran, so nothing is saved as evidence.
+    // runsBefore orders runs saved later by hand against this failure without trusting clocks.
+    const runsBefore = context.ledger.show(context.projectId).sources.filter(source => source.test === testId).length;
+    context.ledger.logStep(context.projectId, "run", testId, { launchFailed: error.message, runsBefore });
+    return { step: "run", did: `${testId} could not start: ${error.message}`, status: "continue" };
+  }
   const source = context.ledger.saveRun(parseId("test", testId), run);
   context.ledger.logStep(context.projectId, "run", testId, { source: source.id, exitCode: run.exitCode });
   return { step: "run", did: `Ran ${testId} (exit code ${run.exitCode}); output saved as ${source.id}.`, status: "continue" };
@@ -548,39 +535,28 @@ async function decide(context: LoopContext, view: View, claim: ClaimView, test: 
   const searches = view.searches.filter(item => item.at > test.predictedAt);
   const runs = view.sources.filter(source => source.test === test.id).map(source => ({ id: source.id, exitCode: source.exitCode }));
   const unread = new Set(reads.flatMap(item => item.unread));
+  // Why scripts could not start: diagnostics for the verdict, never evidence.
+  const couldNotStart = runCode(context, test.id).flatMap(item => item.couldNotStart ? [item.couldNotStart] : []);
   const work = {
     searchesRun: searches.length, sourcesRead: new Set(reads.flatMap(item => item.sources).filter(id => !unread.has(id))).size, runs: runs.length, quotesSaved: quotes.length,
-    // Pages the model failed to read: absence of evidence in them is not evidence of absence.
+    // Pages an older read could not finish: absence of evidence in them is not evidence of absence.
     ...(unread.size ? { sourcesUnread: [...unread] } : {}),
+    ...(couldNotStart.length ? { scriptsThatCouldNotStart: couldNotStart } : {}),
   };
-  let refusal: string | undefined;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const output = await context.think({
-      step: "verdict", goal: `Decide ${claim.id} against its kill condition and ${test.id}'s prediction.`, schema: VerdictSchema,
-      inputs: {
-        claim: { id: claim.id, kind: claim.kind, statement: claim.statement, killIf: claim.killIf }, test, workDone: work, today: today(),
-        quotesFromThisTest: quotes, earlierQuotes, searchesSinceTest: searches, runs, ...(refusal ? { previousRefusal: refusal } : {}),
-      },
-    });
-    try {
-      const verdict = context.ledger.addVerdict({
-        claimId: parseId("claim", claim.id), result: output.result, note: output.note, author: AUTHOR, testId: parseId("test", test.id),
-        quoteIds: output.quotes.map(id => parseId("quote", id)),
-      });
-      context.ledger.logStep(context.projectId, "verdict", test.id, { verdict: verdict.id, result: output.result });
-      return { step: "verdict", did: `${verdict.id}: ${claim.id} is ${verdict.status}.`, status: "continue" };
-    } catch (error) {
-      if (!(error instanceof CliError)) throw error;
-      refusal = `${error.code}: ${error.message}`;
-      context.notify(`The ledger refused the verdict (${refusal}). Asking again.`);
-    }
-  }
-  const verdict = context.ledger.addVerdict({
-    claimId: parseId("claim", claim.id), result: "unclear", author: AUTHOR, testId: parseId("test", test.id), quoteIds: [],
-    note: `The proposed verdict was refused twice by the ledger rules, last with ${refusal?.split(":")[0]}. Recorded as unclear.`,
+  const output = await context.think({
+    step: "verdict", goal: `Decide ${claim.id} against its kill condition and ${test.id}'s prediction.`, schema: VerdictSchema,
+    inputs: {
+      claim: { id: claim.id, kind: claim.kind, statement: claim.statement, killIf: claim.killIf }, test, workDone: work, today: today(),
+      quotesFromThisTest: quotes, earlierQuotes, searchesSinceTest: searches, runs,
+    },
   });
-  context.ledger.logStep(context.projectId, "verdict", test.id, { verdict: verdict.id, result: "unclear", refusal });
-  return { step: "verdict", did: `${verdict.id}: ${claim.id} is unclear after two refused verdicts.`, status: "continue" };
+  // The ledger's rules decide whether the verdict stands; a refusal goes back to the agent to fix and submit again.
+  const verdict = context.ledger.addVerdict({
+    claimId: parseId("claim", claim.id), result: output.result, note: output.note, author: AUTHOR, testId: parseId("test", test.id),
+    quoteIds: output.quotes.map(id => parseId("quote", id)),
+  });
+  context.ledger.logStep(context.projectId, "verdict", test.id, { verdict: verdict.id, result: output.result });
+  return { step: "verdict", did: `${verdict.id}: ${claim.id} is ${verdict.status}.`, status: "continue" };
 }
 
 async function review(context: LoopContext, claim: ClaimView): Promise<StepResult> {
@@ -597,7 +573,7 @@ async function review(context: LoopContext, claim: ClaimView): Promise<StepResul
   const citedSources = [...new Set(cited.map(quote => quote.source))];
   const sourceIds = [...citedSources, ...readSources.filter(id => !citedSources.includes(id)).slice(0, REVIEW_UNCITED_SOURCES)];
   const output = await context.think({
-    step: "review", goal: `Try to break verdict ${verdictId} on ${claim.id}.`, schema: ReviewSchema,
+    step: "review", goal: `Try to break verdict ${verdictId} on ${claim.id}.`, schema: ReviewSchema, independent: true,
     inputs: {
       claim: { id: blindClaim.id, kind: blindClaim.kind, statement: blindClaim.statement, killIf: blindClaim.killIf },
       tests: blindClaim.tests, verdict, citedQuotes: cited, otherQuotesTheTestGathered: gathered, constraints: blind.constraints.map(note => note.text),
@@ -605,14 +581,19 @@ async function review(context: LoopContext, claim: ClaimView): Promise<StepResul
       ...(verdict.test && blindClaim.tests.find(test => test.id === verdict.test)?.kind === "experiment"
         // Every run with its code and the end of its output, so "it could not run" can be checked too.
         ? {
-          experimentRuns: runCode(context, verdict.test).filter(item => item.run).map(item => {
-            const run = context.ledger.readSource(parseId("source", item.run!), 0);
-            return { ...item, exitCode: run.exitCode, outputTail: fullText(context, item.run!).slice(-4_000) };
-          }),
+          // A launch failure has no output; its reason is a diagnostic, never evidence.
+          experimentRuns: (() => {
+            const scripted = runCode(context, verdict.test);
+            const logged = new Set(scripted.map(item => item.run));
+            // A run saved by hand has no script; its command names the folder it ran in, where the code is.
+            const byHand = blind.sources.filter(source => source.test === verdict.test && !logged.has(source.id))
+              .map(source => ({ run: source.id, byHand: true, command: source.command, exitCode: source.exitCode }));
+            return [...scripted.map(item => item.run ? { ...item, exitCode: context.ledger.readSource(parseId("source", item.run), 0).exitCode } : item), ...byHand];
+          })(),
         } : {}),
       searches: blind.searches.filter(item => verdict.test && item.at > (blindClaim.tests.find(test => test.id === verdict.test)?.predictedAt ?? "")),
     },
-    evidence: sourceEvidence(context, sourceIds),
+    sources: sourceIds,
   });
   const result = context.ledger.addReview({ verdictId: parseId("verdict", verdictId), result: output.result, note: output.note, reviewer: REVIEWER });
   context.ledger.logStep(context.projectId, "review", verdictId, { result: output.result });
@@ -642,22 +623,23 @@ async function findings(context: LoopContext, view: View): Promise<StepResult> {
         return newestWithin([...quotes.filter(quote => !cited.has(quote.id)), ...quotes.filter(quote => cited.has(quote.id))].map(brief), CONTEXT_QUOTE_BYTES);
       })(),
       priorArt: live(view.notes).filter(note => note.kind === "prior-art" || note.kind === "framing").map(note => ({ kind: note.kind, text: note.text })),
-      // The newest good run of each of this idea's tests, cut to its start and end so the call stays within the worker's input limit.
-      experimentOutput: claims.flatMap(claim => live(claim.tests)).flatMap(test => {
-        const run = view.sources.filter(source => source.test === test.id && runSucceeded(context, source)).at(-1);
-        return run ? [{ source: run.id, test: test.id, text: headAndTail(fullText(context, run.id), FINDINGS_RUN_CHARS) }] : [];
-      }),
     },
+    // The newest good run of each of this idea's tests, read in full.
+    sources: claims.flatMap(claim => live(claim.tests)).flatMap(test => {
+      const run = view.sources.filter(source => source.test === test.id && runSucceeded(context, source)).at(-1);
+      return run ? [run.id] : [];
+    }),
   });
-  context.ledger.addNote(context.projectId, "summary", output.summary);
+  // Every finding cites live quotes, checked before anything is saved, so a refused answer records nothing.
   const known = new Set(live(view.quotes).map(quote => quote.id));
-  let saved = 0;
-  for (const finding of output.findings) {
-    const quotes = finding.quotes.map(id => id.trim().toUpperCase()).filter(id => known.has(id));
-    if (!quotes.length) continue;
-    context.ledger.addNote(context.projectId, "finding", finding.text, quotes.map(id => parseId("quote", id)));
-    saved += 1;
+  const cited = output.findings.map(finding => ({ text: finding.text, quotes: finding.quotes.map(id => id.trim().toUpperCase()) }));
+  const unknown = [...new Set(cited.flatMap(finding => finding.quotes.filter(id => !known.has(id))))];
+  if (unknown.length || cited.some(finding => !finding.quotes.length)) {
+    throw new CliError("BAD_ANSWER", `Every finding must cite at least one live quote${unknown.length ? `; these are not live quotes in this project: ${unknown.join(", ")}` : ""}. Fix the citations and submit again, or save the exact sentences with scraply quote add and then run scraply next for the updated work order.`, 2);
   }
+  context.ledger.addNote(context.projectId, "summary", output.summary);
+  for (const finding of cited) context.ledger.addNote(context.projectId, "finding", finding.text, finding.quotes.map(id => parseId("quote", id)));
+  const saved = cited.length;
   const variants = output.variants.map(variant => ({ ...variant, note: context.ledger.addNote(context.projectId, "variant", `${variant.title}: ${variant.pitch} Why: ${variant.why}`).id }));
   context.ledger.logStep(context.projectId, "findings", currentIdea(view)?.id ?? null, { summary: output.summary, variants, statuses: claimStatuses(view) });
   return {
@@ -672,38 +654,6 @@ function pickVariant(projectId: string, variantIds: readonly string[]) {
     : `Nothing points to a variant. Export the report with: scraply export --project ${projectId} --format markdown --out <file>`;
 }
 
-/**
- * The findings step when the calling agent writes the ideas (`--agent-findings`). The first call records which notes
- * exist and asks for summary, finding, and variant notes; a later call that sees new ones closes the pass with them.
- * A summary alone closes a pass that left nothing to build on.
- */
-function handOff(context: LoopContext, view: View, lastWorkId: number): StepResult {
-  const projectId = view.project.id;
-  const handoff = stepLog(context).steps.filter(item => item.step === "handoff" && item.id > lastWorkId).at(-1);
-  const ask = {
-    step: "findings", status: "needs-you" as const,
-    next: `Write the pass up yourself from the record (scraply show --project ${projectId}, and each run's output with scraply source show S#): `
-      + `scraply note add --project ${projectId} --kind summary --text "<what survived, what died, what is unknown>", `
-      + `findings with scraply note add --project ${projectId} --kind finding --quote Q# --text "...", and up to three variants with `
-      + `scraply note add --project ${projectId} --kind variant --text "<title>: <pitch> Why: <what in the evidence points there>". Then run scraply auto --project ${projectId} --agent-findings again.`,
-  };
-  if (!handoff) {
-    const newest = Math.max(0, ...view.notes.map(note => parseId("note", note.id)));
-    context.ledger.logStep(context.projectId, "handoff", currentIdea(view)?.id ?? null, { notes: newest });
-    return { ...ask, did: "The pass is finished; the findings and variants are yours to write." };
-  }
-  const since = z.object({ notes: z.number() }).parse(handoff.detail).notes;
-  const written = live(view.notes).filter(note => ["summary", "finding", "variant"].includes(note.kind) && parseId("note", note.id) > since);
-  if (!written.length) return { ...ask, did: "Still waiting for the summary, findings, and variants." };
-  const variants = written.filter(note => note.kind === "variant").map(note => note.id);
-  const findingCount = written.filter(note => note.kind === "finding").length;
-  context.ledger.logStep(context.projectId, "findings", currentIdea(view)?.id ?? null, { by: "agent", notes: written.map(note => note.id), statuses: claimStatuses(view) });
-  return {
-    step: "findings", status: "needs-you", did: `Saved ${findingCount} finding(s) and ${variants.length} variant(s) from the calling agent.`,
-    next: pickVariant(projectId, variants),
-  };
-}
-
 // ---- Choosing the next step ----
 
 /** Run the one step the project needs next. */
@@ -713,7 +663,7 @@ export async function advance(context: LoopContext): Promise<StepResult> {
   const projectId = view.project.id;
 
   if (!log.last("frame")) return frame(context, view);
-  if (!log.last("survey")) return survey(context, view);
+  if (!log.last("survey")) return log.last("survey-search") ? survey(context, view) : surveySearch(context);
 
   const questions = live(view.notes).filter(note => note.kind === "question");
   const lastQuestion = questions.at(-1);
@@ -750,7 +700,7 @@ export async function advance(context: LoopContext): Promise<StepResult> {
     if (!log.last("design", test.id)) {
       return {
         step: "test", status: "needs-you", did: `${test.id} on ${claim.id} was written by hand, so the loop has no searches or script for it.`,
-        next: `Gather its evidence (scraply search and fetch, or scraply experiment run --test ${test.id} -- <command>), save quotes, and record its verdict with scraply verdict add --claim ${claim.id} --test ${test.id}, then run scraply auto again.`,
+        next: `Gather its evidence (scraply search and fetch, or scraply experiment run --test ${test.id} -- <command>), save quotes, and record its verdict with scraply verdict add --claim ${claim.id} --test ${test.id}, then run scraply next again.`,
       };
     }
     if (test.kind === "desk") {
@@ -776,13 +726,22 @@ export async function advance(context: LoopContext): Promise<StepResult> {
       return decide(context, view, claim, test);
     }
     const runs = view.sources.filter(source => source.test === test.id);
+    const attempts = runAttempts(context, view, test.id);
     const lastScript = log.last("script", test.id);
     const lastRun = log.last("run", test.id);
-    const lastFailed = runs.length > 0 && !runSucceeded(context, runs.at(-1)!);
-    if (!lastScript || (lastRun && lastRun.id > lastScript.id && lastFailed && runs.length < MAX_RUNS)) {
-      return script(context, view, claim, test, runs);
+    // The newest saved run decides, including one run by hand, unless a launch failed after it; retries count attempts.
+    const newestRun = runs.at(-1);
+    // A launch failure is the latest attempt unless a run was saved after it; failures logged before runsBefore
+    // existed fall back to timestamps.
+    const failedBefore = z.object({ launchFailed: z.string(), runsBefore: z.number() }).safeParse(lastRun?.detail);
+    const launchFailedLast = attempts.at(-1)?.launchFailed !== undefined
+      && (failedBefore.success ? runs.length <= failedBefore.data.runsBefore : !newestRun || newestRun.fetchedAt <= lastRun!.at);
+    const lastFailed = launchFailedLast || (newestRun !== undefined && !runSucceeded(context, newestRun));
+    const superseded = goodRunSinceScript(context, lastScript, runs) !== undefined;
+    if (!lastScript || (lastRun && lastRun.id > lastScript.id && lastFailed && attempts.length < MAX_RUNS)) {
+      return script(context, view, claim, test, attempts);
     }
-    if (!lastRun || lastRun.id < lastScript.id) {
+    if (!superseded && (!lastRun || lastRun.id < lastScript.id)) {
       if (!context.trust) {
         return {
           step: "approve", status: "needs-you", did: `The script for ${test.id} is waiting in ${z.object({ dir: z.string() }).parse(lastScript.detail).dir}.`,
@@ -791,9 +750,11 @@ export async function advance(context: LoopContext): Promise<StepResult> {
       }
       return runPendingScript(context, test.id);
     }
-    const lastRead = log.last("read", test.id);
-    const good = runs.filter(run => runSucceeded(context, run));
-    if (good.length && (!lastRead || lastRead.id < lastRun.id)) return read(context, view, claim, test, [good.at(-1)!.id]);
+    // Read the newest good run unless this test already read it, so a run saved later by hand is read too.
+    const alreadyRead = new Set(log.steps.filter(item => item.step === "read" && item.target === test.id)
+      .flatMap(item => z.object({ sources: z.array(z.string()) }).parse(item.detail).sources));
+    const newestGood = runs.filter(run => runSucceeded(context, run)).at(-1);
+    if (newestGood && !alreadyRead.has(newestGood.id)) return read(context, view, claim, test, [newestGood.id]);
     return decide(context, view, claim, test);
   }
 
@@ -808,7 +769,8 @@ export async function advance(context: LoopContext): Promise<StepResult> {
   const dead = claims.some(claim => claim.status === "killed" && claim.kind !== "feasibility");
   if (dead || !testable.length) {
     const lastFindings = log.last("findings");
-    let lastWork = log.steps.filter(item => item.step !== "findings" && item.step !== "handoff").at(-1);
+    // "handoff" steps come from ledgers written before the agent did all the thinking.
+    const lastWork = log.steps.filter(item => item.step !== "findings" && item.step !== "handoff").at(-1);
     if (lastFindings && (!lastWork || lastFindings.id > lastWork.id)) {
       // A write-up for an earlier idea, or anything recorded by hand since that changes a claim (a verdict, a review,
       // a retraction), makes it stale: reopen it rather than call the pass finished.
@@ -824,35 +786,37 @@ export async function advance(context: LoopContext): Promise<StepResult> {
         };
       }
       context.ledger.logStep(context.projectId, "reopen", currentIdea(view)?.id ?? null, { after: lastFindings.id });
-      lastWork = stepLog(context).steps.at(-1);
     }
-    return context.agentFindings ? handOff(context, view, lastWork?.id ?? 0) : findings(context, view);
+    // A pass an older Scraply handed to the agent ("handoff" step, before agents answered work orders) closes with
+    // the summary, finding, and variant notes the agent wrote after it, instead of being written up twice.
+    const after = stepLog(context).steps.filter(item => item.step !== "findings" && item.step !== "handoff").at(-1)?.id ?? 0;
+    const handoff = log.steps.filter(item => item.step === "handoff" && item.id > after && item.target === (currentIdea(view)?.id ?? null)).at(-1);
+    const since = z.object({ notes: z.number() }).safeParse(handoff?.detail);
+    const written = since.success
+      ? live(view.notes).filter(note => ["summary", "finding", "variant"].includes(note.kind) && parseId("note", note.id) > since.data.notes) : [];
+    if (written.length) {
+      const variants = written.filter(note => note.kind === "variant").map(note => note.id);
+      context.ledger.logStep(context.projectId, "findings", currentIdea(view)?.id ?? null, { by: "agent", notes: written.map(note => note.id), statuses: claimStatuses(view) });
+      return {
+        step: "findings", status: "needs-you", next: pickVariant(projectId, variants),
+        did: `Closed the pass with the ${written.filter(note => note.kind === "finding").length} finding(s) and ${variants.length} variant(s) written after it was handed over.`,
+      };
+    }
+    return findings(context, view);
   }
   const blocked = log.last("blocked");
   const newest = Math.max(...live(view.notes).filter(note => note.kind === "constraint").map(note => parseId("note", note.id)), 0);
   const ownerFiles = view.sources.filter(source => source.via === "owner").length;
-  // Wait, without a model call, while the owner has added nothing since the last request and its claim is still open;
+  // Wait, without asking for a new design, while the owner has added nothing since the last request and its claim is still open;
   // once they have, or the claim was settled some other way, ask the design again.
   if (blocked && blocked.id === log.steps.at(-1)?.id && testable.some(claim => claim.id === blocked.target?.trim().toUpperCase())) {
     const since = z.object({ notes: z.number(), files: z.number() }).safeParse(blocked.detail);
     if (!since.success || (since.data.notes === newest && since.data.files === ownerFiles)) {
       return {
         step: "design", status: "needs-you", did: `Still waiting: ${z.object({ needsOwner: z.string() }).parse(blocked.detail).needsOwner}`,
-        next: `Add it with scraply note add --project ${projectId} --kind constraint or scraply source add --project ${projectId} --origin owner, then run scraply auto again.`,
+        next: `Add it with scraply note add --project ${projectId} --kind constraint or scraply source add --project ${projectId} --origin owner, then run scraply next again.`,
       };
     }
   }
   return design(context, view, testable);
-}
-
-/** Run steps until one needs the owner, the pass is done, or `maxSteps` ran. */
-export async function advanceUntilBlocked(context: LoopContext, maxSteps: number) {
-  const steps: StepResult[] = [];
-  while (steps.length < maxSteps) {
-    const result = await advance(context);
-    steps.push(result);
-    context.notify(`[${result.step}] ${result.did}`);
-    if (result.status !== "continue") break;
-  }
-  return steps;
 }

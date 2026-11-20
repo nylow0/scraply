@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { CliError } from "./output";
 
@@ -46,7 +46,7 @@ export const MAX_SOURCE_CHARS = 300_000;
 /** `source show` returns a long source in windows of this many characters. */
 export const SOURCE_WINDOW = 40_000;
 const NEED_EVIDENCE: readonly string[] = ["firsthand", "measured"];
-const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 2;
 
 type ClaimKind = (typeof CLAIM_KINDS)[number];
 type QuoteKind = (typeof QUOTE_KINDS)[number];
@@ -480,10 +480,13 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
   }
 
   return {
+    /** The ledger folder's canonical path: tells this ledger apart from any other, however it was named. */
+    dataDir: realpathSync.native(dataDir),
     close: () => db.close(),
 
+    /** Fails unless the project exists; returns when it was created, which tells it apart from a same-numbered project in another ledger. */
     requireProject(projectId: number) {
-      project(projectId);
+      return { createdAt: project(projectId).created_at };
     },
 
     createProject(name: string, seed: string) {

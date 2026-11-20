@@ -1,6 +1,6 @@
 {
   "name": "scraply",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "bin": {
     "scraply": "src/cli/main.ts"
   },
@@ -11,10 +11,8 @@
   "type": "module",
   "scripts": {
     "scraply": "bun src/cli/main.ts",
-    "prepare:runtime": "bun scripts/prepare-runtime.ts",
     "test": "bun test ./test/unit && bun test --timeout 30000 ./test/integration",
     "test:exa": "bun test test/integration/exa.live.test.ts",
-    "trace": "bun scripts/trace.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "check": "bun run lint && bun run typecheck && bun run test"
@@ -25,17 +23,10 @@
   "devDependencies": {
     "@types/bun": "^1.2.22",
     "eslint": "^10.9.0",
-    "extract-zip": "2.0.1",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.67.0"
   },
   "overrides": {
-    "brace-expansion": "5.0.9",
-    "fast-uri": "3.1.5",
-    "js-yaml": "4.3.1",
-    "nanoid": "3.3.18",
-    "postcss": "8.5.26",
-    "tar": "7.5.21",
-    "undici": "7.29.0"
+    "brace-expansion": "5.0.9"
   }
 }
