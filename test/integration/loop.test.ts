@@ -349,15 +349,24 @@ describe("the seed-and-kill-test loop", () => {
       split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
       design: [{ claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null, setAside: null }],
       script: [script, script],
-      read: [{ quotes: [] }],
+      read: [{ quotes: [{ source: "S2", text: "Sanity check passed. Lift 0.12.", speaker: "T1 run 2", kind: "measured", bearing: "for" }] }],
+      verdict: [{ result: "provisional", quotes: ["Q1"], note: "The fixed run shows lift and passed its sanity check." }],
+      review: [{ result: "upheld", note: "Checked the code." }],
     };
     const failing: LoopContext["runCommand"] = async command => ({ command: command.join(" "), exitCode: 1, output: "TypeError\n[exit code 1]" });
     expect((await advanceUntilBlocked(context(), 5)).at(-1)).toMatchObject({ step: "script", status: "needs-you" });
     await runPendingScript(context({ runCommand: failing }), "T1");
     expect(await step()).toMatchObject({ step: "script", status: "needs-you", did: expect.stringContaining("attempt 2") });
     await new Promise(resolve => setTimeout(resolve, 5));
-    ledger.saveRun(1, { command: "bun fixed.ts", exitCode: 0, output: "Sanity check passed. Lift 0.12.\n[exit code 0]" });
+    ledger.saveRun(1, { command: "bun fixed.ts (in /work/fix)", exitCode: 0, output: "Sanity check passed. Lift 0.12.\n[exit code 0]" });
     expect(await step()).toMatchObject({ step: "read" });
+    // A late approval does not run the replaced script after all.
+    await expect(runPendingScript(context(), "T1")).rejects.toMatchObject({ code: "ALREADY_RAN" });
+    expect(runs).toHaveLength(0);
+    // The reviewer is told where the hand run's code is, alongside the failed script it replaced.
+    let reviewInputs: unknown;
+    await advanceUntilBlocked(context({ think: async request => { if (request.step === "review") reviewInputs = request.inputs; return think(request); } }), 2);
+    expect(reviewInputs).toMatchObject({ experimentRuns: [{ run: "S1", exitCode: 1 }, { run: "S2", byHand: true, command: "bun fixed.ts (in /work/fix)", exitCode: 0 }] });
   });
 
   test("scripts that could not start reach the verdict and the review as diagnostics, never as runs", async () => {

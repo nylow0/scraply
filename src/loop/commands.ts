@@ -143,8 +143,9 @@ export const loopCommands: readonly Command[] = [
       let value: unknown;
       try { value = JSON.parse(text); }
       catch { throw new CliError("BAD_ANSWER", "The answer is not valid JSON.", 2); }
-      // An answer belongs to a ledger `next` already set up. Refuse one sent anywhere else before opening it, which
-      // would create or upgrade a ledger for an order that never came from it.
+      // An answer belongs to a ledger `next` already set up. Refuse one sent anywhere else before opening the ledger,
+      // which would create or upgrade one for an order that never came from it. The read-only check keeps its schema
+      // and records as they are; SQLite may still add its -wal and -shm files beside it.
       const path = join(context.dataDir, "ledger.db");
       let version: number | undefined;
       if (existsSync(path)) {

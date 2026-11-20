@@ -162,6 +162,20 @@ function runSucceeded(context: LoopContext, run: { id: string; exitCode?: number
   return !/sanity check failed|setup failed/i.test(fullText(context, run.id));
 }
 
+/**
+ * A good run saved after the test's newest script, such as one run by hand, which makes running that script
+ * unnecessary. Scripts logged before runsBefore existed fall back to timestamps.
+ */
+function goodRunSinceScript(context: LoopContext, testId: string) {
+  const script = stepLog(context).last("script", testId);
+  const runs = context.ledger.show(context.projectId).sources.filter(source => source.test === testId);
+  const newest = runs.at(-1);
+  if (!script || !newest) return undefined;
+  const before = z.object({ runsBefore: z.number() }).safeParse(script.detail);
+  const savedAfter = before.success ? runs.length > before.data.runsBefore : newest.fetchedAt > script.at;
+  return savedAfter && runSucceeded(context, newest) ? newest : undefined;
+}
+
 /** The claim's newest test, if no verdict answers it yet. A verdict that names no test answers every test written before it. */
 function openTest(claim: ClaimView): TestView | undefined {
   const test = live(claim.tests).at(-1);
@@ -481,6 +495,8 @@ export async function runPendingScript(context: LoopContext, testId: string): Pr
   if (!pending) throw new CliError("NO_SCRIPT", `${testId} has no script to run yet. Run: scraply next --project P${context.projectId}`);
   const lastRun = stepLog(context).last("run", testId);
   if (lastRun && lastRun.id > pending.id) throw new CliError("ALREADY_RAN", `The newest script for ${testId} already ran. Run: scraply next --project P${context.projectId}`);
+  const replaced = goodRunSinceScript(context, testId);
+  if (replaced) throw new CliError("ALREADY_RAN", `${replaced.id}, a good run saved after the newest script for ${testId}, replaced it, so the script is not run. Run: scraply next --project P${context.projectId}`);
   const detail = z.object({ dir: z.string(), command: z.array(z.string()) }).parse(pending.detail);
   // Refuse a test retracted since its script was written before running anything.
   context.ledger.requireExperiment(parseId("test", testId));
@@ -566,7 +582,14 @@ async function review(context: LoopContext, claim: ClaimView): Promise<StepResul
         // Every run with its code and the end of its output, so "it could not run" can be checked too.
         ? {
           // A launch failure has no output; its reason is a diagnostic, never evidence.
-          experimentRuns: runCode(context, verdict.test).map(item => item.run ? { ...item, exitCode: context.ledger.readSource(parseId("source", item.run), 0).exitCode } : item),
+          experimentRuns: (() => {
+            const scripted = runCode(context, verdict.test);
+            const logged = new Set(scripted.map(item => item.run));
+            // A run saved by hand has no script; its command names the folder it ran in, where the code is.
+            const byHand = blind.sources.filter(source => source.test === verdict.test && !logged.has(source.id))
+              .map(source => ({ run: source.id, byHand: true, command: source.command, exitCode: source.exitCode }));
+            return [...scripted.map(item => item.run ? { ...item, exitCode: context.ledger.readSource(parseId("source", item.run), 0).exitCode } : item), ...byHand];
+          })(),
         } : {}),
       searches: blind.searches.filter(item => verdict.test && item.at > (blindClaim.tests.find(test => test.id === verdict.test)?.predictedAt ?? "")),
     },
@@ -714,12 +737,7 @@ export async function advance(context: LoopContext): Promise<StepResult> {
     const launchFailedLast = attempts.at(-1)?.launchFailed !== undefined
       && (failedBefore.success ? runs.length <= failedBefore.data.runsBefore : !newestRun || newestRun.fetchedAt <= lastRun!.at);
     const lastFailed = launchFailedLast || (newestRun !== undefined && !runSucceeded(context, newestRun));
-    // A good run saved after the newest script, such as one run by hand, makes that script unnecessary.
-    // Scripts logged before runsBefore existed fall back to timestamps.
-    const runsBefore = z.object({ runsBefore: z.number() }).safeParse(lastScript?.detail);
-    const savedAfterScript = lastScript !== undefined && newestRun !== undefined
-      && (runsBefore.success ? runs.length > runsBefore.data.runsBefore : newestRun.fetchedAt > lastScript.at);
-    const superseded = !lastFailed && savedAfterScript;
+    const superseded = goodRunSinceScript(context, test.id) !== undefined;
     if (!lastScript || (lastRun && lastRun.id > lastScript.id && lastFailed && attempts.length < MAX_RUNS)) {
       return script(context, view, claim, test, attempts);
     }

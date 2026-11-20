@@ -286,10 +286,10 @@ const ledgerCommands: readonly Command[] = [
       const minutes = Number(stringFlag(args, "timeout-minutes") ?? 30);
       // Refuse a missing, retracted, or desk test before running anything.
       context.ledger().requireExperiment(testId);
-      const run = await runExperimentCommand(args.positionals, {
-        cwd: resolve(stringFlag(args, "cwd") ?? "."), timeoutMs: Math.max(1, minutes) * 60_000, env: context.env, notify: context.notify,
-      });
-      return { ...context.ledger().saveRun(testId, run), next: "Read the output with: scraply source show <id>, then quote what it measured." };
+      const cwd = resolve(stringFlag(args, "cwd") ?? ".");
+      const run = await runExperimentCommand(args.positionals, { cwd, timeoutMs: Math.max(1, minutes) * 60_000, env: context.env, notify: context.notify });
+      // The folder goes into the saved command, so a reviewer can find the code behind a run made by hand.
+      return { ...context.ledger().saveRun(testId, { ...run, command: `${run.command} (in ${cwd})` }), next: "Read the output with: scraply source show <id>, then quote what it measured." };
     },
   },
   {
