@@ -43,11 +43,13 @@ export function headStep(ledger: Ledger, projectId: number) {
 }
 
 /**
- * Names one request in one project at one point of its step log, as `<step>-<head step>-<hash>`, so an answer is
- * only ever applied to the work order it was written for: not to another project, another pass, or a later state.
+ * Names one request in one project at one point of its step log, as `<step>-<head step>-<hash>`. The hash covers
+ * the goal, inputs, and sources, so an answer is only ever applied to the work order it was written for: not to
+ * another project, another pass, or one whose inputs changed since, such as by a new constraint from the owner.
  */
-export function orderId(request: { step: Step; goal: string }, ledger: Ledger, projectId: number) {
-  return `${request.step}-${headStep(ledger, projectId)}-${createHash("sha256").update(`P${projectId}\n${request.goal}`).digest("hex").slice(0, 8)}`;
+export function orderId(request: ThinkRequest<unknown>, ledger: Ledger, projectId: number) {
+  const content = JSON.stringify([`P${projectId}`, request.goal, request.inputs, request.sources ?? []]);
+  return `${request.step}-${headStep(ledger, projectId)}-${createHash("sha256").update(content).digest("hex").slice(0, 8)}`;
 }
 
 /** The start and the end of a long text within `max` characters; programs usually print their results last. */

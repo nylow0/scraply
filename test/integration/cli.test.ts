@@ -381,6 +381,14 @@ describe("scraply CLI", () => {
     expect(await scraply("submit", "--project", "P1", "--order", frame, "--answer", "{not json")).toMatchObject({ exitCode: 2, error: { code: "BAD_ANSWER" } });
     expect(requests).toHaveLength(0);
 
+    // A constraint the owner adds after the order was issued changes its inputs, so an answer written without it is refused.
+    const constrained = await scraply("project", "new", "constrained", "--seed", "Beekeepers lose track of what they saw in each hive.");
+    expect(constrained).toMatchObject({ data: { id: "P2" } });
+    const before = ((await scraply("next", "--project", "P2")).data as { workOrder: { order: string } }).workOrder.order;
+    await scraply("note", "add", "--project", "P2", "--kind", "constraint", "--text", "Only hobby keepers with fewer than ten hives.");
+    expect(await scraply("submit", "--project", "P2", "--order", before, "--answer", JSON.stringify(framing))).toMatchObject({ error: { code: "STALE_ORDER" } });
+    expect(await scraply("show", "--project", "P2")).toMatchObject({ data: { notes: [{ kind: "constraint" }] } });
+
     // A good answer, piped on stdin, runs on: the survey searches once, then hands back its reading as the next work order.
     stdin = JSON.stringify(framing);
     const survey = await scraply("submit", "--project", "P1", "--order", frame);
@@ -402,25 +410,45 @@ describe("scraply CLI", () => {
     stdin = JSON.stringify(framing);
     expect(await scraply("submit", "--project", "P1", "--order", frame)).toMatchObject({ error: { code: "STALE_ORDER" } });
     await scraply("project", "new", "other", "--seed", "Anything else.");
-    const other = await scraply("next", "--project", "P2");
+    const other = await scraply("next", "--project", "P3");
     expect(other).toMatchObject({ data: { workOrder: { step: "frame" } } });
-    expect(await scraply("submit", "--project", "P2", "--order", frame)).toMatchObject({ error: { code: "STALE_ORDER" } });
-    expect(await scraply("show", "--project", "P2")).toMatchObject({ data: { notes: [] } });
+    expect(await scraply("submit", "--project", "P3", "--order", frame)).toMatchObject({ error: { code: "STALE_ORDER" } });
+    expect(await scraply("show", "--project", "P3")).toMatchObject({ data: { notes: [] } });
     expect(requests.filter(item => item.url === "https://api.exa.ai/search")).toHaveLength(1);
   });
 
   test("an answer the loop no longer needs is refused rather than dropped: a resubmitted script cannot replace the one waiting for approval", async () => {
-    await scraply("project", "new", "quakes", "--seed", "Quakes cluster.");
-    const next = async () => (await scraply("next", "--project", "P1", "--skip-questions")).data as { workOrder: { order: string } };
-    const submit = async (order: string, answer: unknown) => { stdin = JSON.stringify(answer); return scraply("submit", "--project", "P1", "--order", order, "--skip-questions"); };
-    await submit((await next()).workOrder.order, { framing: "A seismologist would query the catalog.", surveyQueries: [], questions: [] });
-    await submit((await next()).workOrder.order, { idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the base rate.", killIf: "No lift on held-out years." }], reuse: [] });
-    await submit((await next()).workOrder.order, { claim: "C1", why: "Free data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known swarm.", control: "Base rate.", holdout: "Later years.", needsOwner: null, setAside: null });
-    const script = (await next()).workOrder.order;
+    let project = "P1";
+    const next = async () => (await scraply("next", "--project", project, "--skip-questions")).data as { workOrder: { order: string } };
+    const submit = async (order: string, answer: unknown, ...flags: string[]) => { stdin = JSON.stringify(answer); return scraply("submit", "--project", project, "--order", order, "--skip-questions", ...flags); };
+    /** A project waiting on its experiment script, as the agent answered every step before it. */
+    const upToScript = async (id: string, claim: string) => {
+      project = id;
+      await scraply("project", "new", "quakes", "--seed", "Quakes cluster.");
+      await submit((await next()).workOrder.order, { framing: "A seismologist would query the catalog.", surveyQueries: [], questions: [] });
+      await submit((await next()).workOrder.order, { idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the base rate.", killIf: "No lift on held-out years." }], reuse: [] });
+      await submit((await next()).workOrder.order, { claim, why: "Free data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known swarm.", control: "Base rate.", holdout: "Later years.", needsOwner: null, setAside: null });
+      return (await next()).workOrder.order;
+    };
+    const script = await upToScript("P1", "C1");
     expect(await submit(script, { files: [{ name: "run.ts", content: "console.log(1)" }], command: ["bun", "run.ts"], explanation: "First." })).toMatchObject({ data: { status: "needs-you", next: expect.stringContaining("experiment approve") } });
     // The owner asks for a change; resubmitting the answered order must not look like it worked.
     expect(await submit(script, { files: [{ name: "run.ts", content: "console.log(2)" }], command: ["bun", "run.ts"], explanation: "Changed." })).toMatchObject({ error: { code: "STALE_ORDER" } });
     expect(readFileSync(join(env.SCRAPLY_DATA_DIR!, "work", "P1", "T1", "attempt-1", "run.ts"), "utf8")).toBe("console.log(1)");
+    // Even an order naming the current head, sent with --trust, is refused without running the waiting script.
+    const head = (await scraply("show", "--project", "P1")).data as { sources: unknown[] };
+    stdin = "{}";
+    const ledger = openLedger(env.SCRAPLY_DATA_DIR!);
+    const forged = `script-${ledger.steps(1).at(-1)!.id}-00000000`;
+    ledger.close();
+    expect(await scraply("submit", "--project", "P1", "--order", forged, "--trust")).toMatchObject({ error: { code: "STALE_ORDER" } });
+    expect(((await scraply("show", "--project", "P1")).data as { sources: unknown[] }).sources).toHaveLength(head.sources.length);
+
+    // A matching script answer sent with --trust runs right away, as the owner asked. Claim IDs count across projects.
+    const trusted = await upToScript("P2", "C2");
+    env.PATH = process.env.PATH ?? "";
+    expect(await submit(trusted, { files: [{ name: "run.ts", content: "console.log('Sanity check passed. Lift 0.12 on held-out years.')" }], command: ["bun", "run.ts"], explanation: "First." }, "--trust"))
+      .toMatchObject({ data: { steps: [{ step: "script" }, { step: "run", did: expect.stringContaining("exit code 0") }], status: "think", workOrder: { step: "read" } } });
   });
 
   test("the ledger rejects edits and deletions made behind the CLI's back", async () => {

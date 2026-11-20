@@ -42,7 +42,7 @@ test("a model drives a project through MCP tools: work orders out, typed answers
   const names = tools.map(tool => tool.name);
   for (const name of ["next", "submit", "search", "fetch", "source_show", "quote_add", "show", "experiment_approve", "variant_accept"]) expect(names).toContain(name);
   for (const name of ["key_set", "key_remove", "mcp"]) expect(names).not.toContain(name);
-  expect(tools.find(tool => tool.name === "submit")!.inputSchema.required).toEqual(["project", "order"]);
+  expect(tools.find(tool => tool.name === "submit")!.inputSchema.required).toEqual(["project", "order", "answer"]);
 
   expect(data(replies.get(3))).toMatchObject({ id: "P1" });
   const order = data(replies.get(4)) as { status: string; workOrder: { step: string; order: string } };

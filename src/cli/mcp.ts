@@ -56,7 +56,8 @@ function toolFor(command: Command) {
         ...positionals.map(item => [item.name, positionalSchema(item)] as const),
         ...flags.map(item => [item.name, flagSchema(item)] as const),
       ]),
-      required: [...positionals.filter(item => item.required).map(item => item.name), ...flags.filter(item => item.required).map(item => item.name)],
+      // A JSON flag is required here: over MCP there is no stdin to read it from instead.
+      required: [...positionals.filter(item => item.required).map(item => item.name), ...flags.filter(item => item.required || JSON_FLAGS.has(item.name)).map(item => item.name)],
       additionalProperties: false,
     },
   };
@@ -74,7 +75,7 @@ function argumentSchema(command: Command) {
       : item.type === "boolean" ? z.boolean()
         : item.type === "number" ? z.number().transform(String)
           : item.multiple ? z.array(text(item.choices)) : text(item.choices);
-    shape[item.name] = optional(value, item.required);
+    shape[item.name] = optional(value, item.required || JSON_FLAGS.has(item.name));
   }
   return z.object(shape).strict();
 }

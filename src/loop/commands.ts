@@ -7,7 +7,7 @@ import { parseId } from "../cli/ledger";
 import { CliError } from "../cli/output";
 import { fetchDirect, search } from "../cli/pages";
 import { advance, runPendingScript, type LoopContext, type StepResult } from "./engine";
-import { ThinkNeeded, agentThinker, headStep, workOrder } from "./think";
+import { ThinkNeeded, agentThinker, headStep, workOrder, type ThinkRequest } from "./think";
 
 const RESULTS_PER_SEARCH = 5;
 const RUN_TIMEOUT_MS = 30 * 60_000;
@@ -49,6 +49,19 @@ async function drive(context: CommandContext, args: CommandArguments, answer?: {
   const stale = () => new CliError("STALE_ORDER", `${answer!.order} is not the work order P${loop.projectId} is waiting on; the project moved on, or the order is from another project. Run: scraply next --project P${loop.projectId}`);
   // An order names the step log's head when it was issued; refuse a stale one before any search or run happens.
   if (answer && answer.order.split("-")[1] !== String(headStep(loop.ledger, loop.projectId))) throw stale();
+  // Until the answer is applied, nothing runs a script on --trust: an order that matches the head but no open step
+  // would otherwise run a waiting experiment before being refused. Trust returns the moment the answer is taken, so
+  // the step that took it (such as a script) already sees it.
+  const trust = loop.trust;
+  if (answer) {
+    loop.trust = false;
+    const take = loop.think;
+    loop.think = async <T,>(request: ThinkRequest<T>) => {
+      const value = await take(request);
+      loop.trust = trust;
+      return value;
+    };
+  }
   const steps: StepResult[] = [];
   const stop = (result: Record<string, unknown>) => {
     if (answer && !state.used) throw stale();
