@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { CliError } from "./output";
 
@@ -480,6 +480,8 @@ export function openLedger(dataDir: string, now: () => Date = () => new Date()) 
   }
 
   return {
+    /** The ledger folder's canonical path: tells this ledger apart from any other, however it was named. */
+    dataDir: realpathSync.native(dataDir),
     close: () => db.close(),
 
     /** Fails unless the project exists; returns when it was created, which tells it apart from a same-numbered project in another ledger. */

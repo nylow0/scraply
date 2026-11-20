@@ -15,8 +15,6 @@ export interface SearchOptions {
   languages?: string[];
   userLocation?: string;
   startPublishedDate?: string;
-  /** Caller metadata; providers send only their supported parameters. */
-  provider?: SearchProvider;
   signal?: AbortSignal;
   timeoutMs?: number;
 }

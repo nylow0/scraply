@@ -472,6 +472,17 @@ describe("scraply CLI", () => {
       .toMatchObject({ data: { steps: [{ step: "script" }, { step: "run", did: expect.stringContaining("exit code 0") }], status: "think", workOrder: { step: "read" } } });
   });
 
+  test("one command at a time works on a project; a lock left by a dead process is taken over", async () => {
+    await scraply("project", "new", "locked", "--seed", "Anything.");
+    const lock = join(env.SCRAPLY_DATA_DIR!, "locks", "P1.lock");
+    mkdirSync(join(env.SCRAPLY_DATA_DIR!, "locks"), { recursive: true });
+    writeFileSync(lock, String(process.pid));
+    expect(await scraply("next", "--project", "P1")).toMatchObject({ exitCode: 1, error: { code: "BUSY" } });
+    writeFileSync(lock, "2147483646");
+    expect(await scraply("next", "--project", "P1")).toMatchObject({ ok: true, data: { status: "think" } });
+    expect(existsSync(lock)).toBe(false);
+  });
+
   test("the ledger rejects edits and deletions made behind the CLI's back", async () => {
     await scraply("project", "new", "locked", "--seed", "Anything.");
     await scraply("claim", "add", "--project", "P1", "--kind", "gap", "--statement", "Nothing does this.", "--kill-if", "A product does it.");

@@ -1,12 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openLedger, parseId, type FetchedSource, type Ledger } from "../../src/cli/ledger";
 import { CliError } from "../../src/cli/output";
 import { renderReport } from "../../src/cli/report";
 import { advance, runPendingScript, type LoopContext, type StepResult } from "../../src/loop/engine";
-import type { Step, Think, ThinkRequest } from "../../src/loop/think";
+import { orderId, type Step, type Think, type ThinkRequest } from "../../src/loop/think";
+import { z } from "zod";
 
 // Synthetic pages: two keepers describe the problem on one forum, a vendor page shows what exists.
 const PAGES: Record<string, FetchedSource> = {
@@ -330,8 +331,69 @@ describe("the seed-and-kill-test loop", () => {
     // The agent fixes it by hand with scraply experiment run, which saves a run without a loop step.
     await new Promise(resolve => setTimeout(resolve, 5));
     ledger.saveRun(1, { command: "bun fixed.ts", exitCode: 0, output: "Sanity check passed. Lift 0.12 on held-out years.\n[exit code 0]" });
-    answers.read = [{ quotes: [] }];
+    answers.read = [{ quotes: [] }, { quotes: [] }];
     expect(await step()).toMatchObject({ step: "read", did: expect.stringContaining("Read 1 source") });
+    // A second good run saved by hand after that read is read too, instead of going straight to the verdict.
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const later = ledger.saveRun(1, { command: "bun fixed.ts --holdout", exitCode: 0, output: "Sanity check passed. Holdout lift 0.10.\n[exit code 0]" });
+    expect(await step()).toMatchObject({ step: "read" });
+    expect(ledger.steps(1).filter(item => item.step === "read").at(-1)!.detail).toMatchObject({ sources: [later.id] });
+  });
+
+  test("a good run by hand replaces a retry script still waiting for approval", async () => {
+    ledger.createProject("quakes", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    const script = { files: [{ name: "a.ts", content: "x" }], command: ["bun", "a.ts"], explanation: "Run." };
+    answers = {
+      split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null, setAside: null }],
+      script: [script, script],
+      read: [{ quotes: [] }],
+    };
+    const failing: LoopContext["runCommand"] = async command => ({ command: command.join(" "), exitCode: 1, output: "TypeError\n[exit code 1]" });
+    expect((await advanceUntilBlocked(context(), 5)).at(-1)).toMatchObject({ step: "script", status: "needs-you" });
+    await runPendingScript(context({ runCommand: failing }), "T1");
+    expect(await step()).toMatchObject({ step: "script", status: "needs-you", did: expect.stringContaining("attempt 2") });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    ledger.saveRun(1, { command: "bun fixed.ts", exitCode: 0, output: "Sanity check passed. Lift 0.12.\n[exit code 0]" });
+    expect(await step()).toMatchObject({ step: "read" });
+  });
+
+  test("scripts that could not start reach the verdict and the review as diagnostics, never as runs", async () => {
+    ledger.createProject("quakes", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    const script = { files: [{ name: "a.py", content: "print(1)" }], command: ["python-missing", "a.py"], explanation: "Run." };
+    answers = {
+      split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null, setAside: null }],
+      script: [script, script, script, script],
+      verdict: [{ result: "unclear", quotes: [], note: "No script could start, so nothing was measured." }],
+      review: [{ result: "upheld", note: "Nothing ran." }],
+    };
+    const runCommand: LoopContext["runCommand"] = async () => { throw new CliError("RUN_FAILED", "Could not start python-missing: not found."); };
+    const asked: Partial<Record<Step, unknown>> = {};
+    const watching: Think = async request => { asked[request.step] = request.inputs; return think(request); };
+    const steps = await advanceUntilBlocked(context({ trust: true, runCommand, think: watching }), 12);
+    expect(steps.map(item => item.step)).toEqual(["split", "design", "script", "run", "script", "run", "script", "run", "script", "run", "verdict", "review"]);
+    expect(asked.verdict).toMatchObject({ workDone: { runs: 0, scriptsThatCouldNotStart: [expect.stringContaining("python-missing"), expect.any(String), expect.any(String), expect.any(String)] }, runs: [] });
+    expect(asked.review).toMatchObject({ experimentRuns: [{ run: null, couldNotStart: expect.stringContaining("python-missing") }, {}, {}, {}] });
+  });
+
+  test("an order names its ledger, so a copied ledger with the identical project issues different orders", () => {
+    const request = { step: "frame" as const, goal: "Frame the owner's seed.", inputs: { seed: "Anything." }, schema: z.object({}) };
+    const original = openLedger(join(root, "a"));
+    original.createProject("same", "Anything.");
+    original.close();
+    cpSync(join(root, "a"), join(root, "b"), { recursive: true });
+    const orders = ["a", "b"].map(name => {
+      const opened = openLedger(join(root, name));
+      const order = orderId(request, opened, 1);
+      opened.close();
+      return order;
+    });
+    expect(orders[0]).not.toBe(orders[1]);
   });
 
   test("experiment files may live in subfolders but never outside their attempt folder", async () => {
@@ -343,12 +405,16 @@ describe("the seed-and-kill-test loop", () => {
       split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
       design: [experiment],
       script: [
+        { files: [{ name: "data", content: "x" }, { name: "data/run.ts", content: "x" }], command: ["bun", "data/run.ts"], explanation: "Clashing." },
         { files: [{ name: "leftover.ts", content: "x" }, { name: "../escape.ts", content: "x" }], command: ["bun", "a.ts"], explanation: "Bad." },
         { files: [{ name: "lib/data.ts", content: "export {}" }, { name: "a.ts", content: "import './lib/data.ts'" }], command: ["bun", "a.ts"], explanation: "Good." },
       ],
     };
     await advance(context());
     await advance(context());
+    // A file that is also another file's folder is refused before anything is written.
+    await expect(advance(context())).rejects.toMatchObject({ code: "BAD_ANSWER", message: expect.stringContaining("clashes") });
+    expect(existsSync(join(root, "work", "T1", "attempt-1", "data"))).toBe(false);
     await expect(advance(context())).rejects.toThrow("outside its folder");
     expect(existsSync(join(root, "work", "T1", "escape.ts"))).toBe(false);
     // A refused answer writes nothing, so the next one's folder holds only its own files.
@@ -573,6 +639,20 @@ describe("the seed-and-kill-test loop", () => {
     expect(await step()).toMatchObject({ step: "findings", status: "needs-you", next: expect.stringContaining(`<${variant.id}>`) });
     expect(await step()).toMatchObject({ step: "steer", status: "done" });
     expect(ledger.show(1).notes.filter(note => note.kind === "summary")).toHaveLength(1);
+  });
+
+  test("an old handoff closes only the idea it was for, not a newer one added by hand", async () => {
+    ledger.createProject("hives", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    ledger.addClaim(1, "need", "Keepers lose notes.", "Fewer than two describe it.");
+    ledger.addIdea({ projectId: 1, title: "Voice log", pitch: "Talk.", claimIds: [1] });
+    ledger.logStep(1, "untestable", "C1", { why: "Only the owner's club could say." });
+    ledger.logStep(1, "handoff", "I1", { notes: 0 });
+    ledger.addNote(1, "summary", "Nothing could be tested for the voice log.");
+    ledger.addIdea({ projectId: 1, title: "Voice log for clubs", pitch: "Talk, then share.", claimIds: [1] });
+    answers.findings = [{ summary: "The club version is untested too.", findings: [], variants: [] }];
+    expect(await step()).toMatchObject({ step: "findings", did: expect.stringContaining("club version") });
   });
 
   test("retracting evidence after the write-up changes a claim and reopens it", async () => {

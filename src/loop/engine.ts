@@ -140,8 +140,8 @@ function runCode(context: LoopContext, testId: string) {
   const steps = context.ledger.steps(context.projectId);
   const scripts = steps.filter(item => item.step === "script" && item.target === testId);
   return steps.filter(item => item.step === "run" && item.target === testId).map((run, index) => {
-    const source = z.object({ source: z.string() }).safeParse(run.detail);
-    return { run: source.success ? source.data.source : null, files: scriptFiles(scripts[index]?.detail) };
+    const detail = z.object({ source: z.string(), launchFailed: z.string() }).partial().parse(run.detail);
+    return { run: detail.source ?? null, files: scriptFiles(scripts[index]?.detail), ...(detail.launchFailed ? { couldNotStart: detail.launchFailed } : {}) };
   });
 }
 
@@ -447,6 +447,10 @@ async function script(context: LoopContext, view: View, claim: ClaimView, test: 
   const targets = output.files.map(file => ({ ...file, target: resolve(dir, file.name) }));
   const outside = targets.find(file => !file.target.startsWith(`${resolve(dir)}${sep}`));
   if (outside) throw new CliError("BAD_ANSWER", `The script named a file outside its folder (${outside.name}). Use relative paths and submit again.`, 2);
+  // Two files cannot share a path, a file cannot also be a folder of another, and owner/ holds the owner's files.
+  const taken = [resolve(dir, "owner"), ...targets.map(file => file.target)];
+  const clash = targets.find((file, index) => taken.some((other, at) => at !== index + 1 && (other === file.target || other.startsWith(`${file.target}${sep}`) || file.target.startsWith(`${other}${sep}`))));
+  if (clash) throw new CliError("BAD_ANSWER", `The script's file ${clash.name} clashes with another file or with the owner/ folder. Give each file its own path and submit again.`, 2);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(dir, "owner"), { recursive: true });
   for (const source of ownerSources(view)) writeFileSync(join(dir, "owner", `${source.id}.txt`), fullText(context, source.id));
@@ -505,10 +509,13 @@ async function decide(context: LoopContext, view: View, claim: ClaimView, test: 
   const searches = view.searches.filter(item => item.at > test.predictedAt);
   const runs = view.sources.filter(source => source.test === test.id).map(source => ({ id: source.id, exitCode: source.exitCode }));
   const unread = new Set(reads.flatMap(item => item.unread));
+  // Why scripts could not start: diagnostics for the verdict, never evidence.
+  const couldNotStart = runCode(context, test.id).flatMap(item => item.couldNotStart ? [item.couldNotStart] : []);
   const work = {
     searchesRun: searches.length, sourcesRead: new Set(reads.flatMap(item => item.sources).filter(id => !unread.has(id))).size, runs: runs.length, quotesSaved: quotes.length,
     // Pages an older read could not finish: absence of evidence in them is not evidence of absence.
     ...(unread.size ? { sourcesUnread: [...unread] } : {}),
+    ...(couldNotStart.length ? { scriptsThatCouldNotStart: couldNotStart } : {}),
   };
   const output = await context.think({
     step: "verdict", goal: `Decide ${claim.id} against its kill condition and ${test.id}'s prediction.`, schema: VerdictSchema,
@@ -548,10 +555,8 @@ async function review(context: LoopContext, claim: ClaimView): Promise<StepResul
       ...(verdict.test && blindClaim.tests.find(test => test.id === verdict.test)?.kind === "experiment"
         // Every run with its code and the end of its output, so "it could not run" can be checked too.
         ? {
-          experimentRuns: runCode(context, verdict.test).filter(item => item.run).map(item => {
-            const run = context.ledger.readSource(parseId("source", item.run!), 0);
-            return { ...item, exitCode: run.exitCode };
-          }),
+          // A launch failure has no output; its reason is a diagnostic, never evidence.
+          experimentRuns: runCode(context, verdict.test).map(item => item.run ? { ...item, exitCode: context.ledger.readSource(parseId("source", item.run), 0).exitCode } : item),
         } : {}),
       searches: blind.searches.filter(item => verdict.test && item.at > (blindClaim.tests.find(test => test.id === verdict.test)?.predictedAt ?? "")),
     },
@@ -695,10 +700,12 @@ export async function advance(context: LoopContext): Promise<StepResult> {
     const newestRun = runs.at(-1);
     const launchFailedLast = attempts.at(-1)?.launchFailed !== undefined && (!newestRun || newestRun.fetchedAt <= lastRun!.at);
     const lastFailed = launchFailedLast || (newestRun !== undefined && !runSucceeded(context, newestRun));
+    // A good run saved after the newest script, such as one run by hand, makes that script unnecessary.
+    const superseded = !lastFailed && newestRun !== undefined && lastScript !== undefined && newestRun.fetchedAt > lastScript.at;
     if (!lastScript || (lastRun && lastRun.id > lastScript.id && lastFailed && attempts.length < MAX_RUNS)) {
       return script(context, view, claim, test, attempts);
     }
-    if (!lastRun || lastRun.id < lastScript.id) {
+    if (!superseded && (!lastRun || lastRun.id < lastScript.id)) {
       if (!context.trust) {
         return {
           step: "approve", status: "needs-you", did: `The script for ${test.id} is waiting in ${z.object({ dir: z.string() }).parse(lastScript.detail).dir}.`,
@@ -707,9 +714,11 @@ export async function advance(context: LoopContext): Promise<StepResult> {
       }
       return runPendingScript(context, test.id);
     }
-    const lastRead = log.last("read", test.id);
-    const good = runs.filter(run => runSucceeded(context, run));
-    if (good.length && (!lastRead || lastRead.id < lastRun.id)) return read(context, view, claim, test, [good.at(-1)!.id]);
+    // Read the newest good run unless this test already read it, so a run saved later by hand is read too.
+    const alreadyRead = new Set(log.steps.filter(item => item.step === "read" && item.target === test.id)
+      .flatMap(item => z.object({ sources: z.array(z.string()) }).parse(item.detail).sources));
+    const newestGood = runs.filter(run => runSucceeded(context, run)).at(-1);
+    if (newestGood && !alreadyRead.has(newestGood.id)) return read(context, view, claim, test, [newestGood.id]);
     return decide(context, view, claim, test);
   }
 
@@ -745,7 +754,7 @@ export async function advance(context: LoopContext): Promise<StepResult> {
     // A pass an older Scraply handed to the agent ("handoff" step, before agents answered work orders) closes with
     // the summary, finding, and variant notes the agent wrote after it, instead of being written up twice.
     const after = stepLog(context).steps.filter(item => item.step !== "findings" && item.step !== "handoff").at(-1)?.id ?? 0;
-    const handoff = log.steps.filter(item => item.step === "handoff" && item.id > after).at(-1);
+    const handoff = log.steps.filter(item => item.step === "handoff" && item.id > after && item.target === (currentIdea(view)?.id ?? null)).at(-1);
     const since = z.object({ notes: z.number() }).safeParse(handoff?.detail);
     const written = since.success
       ? live(view.notes).filter(note => ["summary", "finding", "variant"].includes(note.kind) && parseId("note", note.id) > since.data.notes) : [];

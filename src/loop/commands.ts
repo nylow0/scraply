@@ -1,3 +1,4 @@
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { requiredFlag, stringFlag, type CommandArguments } from "../cli/args";
 import type { Command, CommandContext } from "../cli/commands";
@@ -15,6 +16,35 @@ const RUN_TIMEOUT_MS = 30 * 60_000;
 const LEDGER_WRITES = new Set(["createProject", "setArchived", "addNote", "recordSearch", "saveSource", "addQuote", "addClaim", "addTest", "saveRun", "addVerdict", "addReview", "addIdea", "retract", "logStep"]);
 /** Mechanical steps one `next` or `submit` may run before it hands back; a pass has far fewer. */
 const MAX_STEPS = 40;
+
+/** Whether a process with this ID is running; one we may not signal still counts. */
+function running(pid: number) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (error) { return error instanceof Error && "code" in error && error.code === "EPERM"; }
+}
+
+/**
+ * Hold the project for one `next`, `submit`, or `approve`, so two processes never apply the same answer or run the
+ * same script. A lock left by a process that died is taken over. Returns the release.
+ */
+function lockProject(dataDir: string, projectId: number) {
+  const dir = join(dataDir, "locks");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, `P${projectId}.lock`);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      writeFileSync(path, String(process.pid), { flag: "wx" });
+      return () => rmSync(path, { force: true });
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+      const holder = Number(readFileSync(path, "utf8"));
+      if (running(holder)) break;
+      rmSync(path, { force: true });
+    }
+  }
+  throw new CliError("BUSY", `Another scraply command is working on P${projectId}. Wait for it to finish, then run the command again.`);
+}
 
 /** Everything one loop step needs: the ledger, search, a place to run experiments, and the agent's answer, if any. */
 function loopContext(context: CommandContext, args: CommandArguments, answer?: { order: string; value: unknown }) {
@@ -47,6 +77,13 @@ function loopContext(context: CommandContext, args: CommandArguments, answer?: {
  * With an answer, the step it was written for runs first; an answer no step asked for is refused.
  */
 async function drive(context: CommandContext, args: CommandArguments, answer?: { order: string; value: unknown }) {
+  const release = lockProject(context.dataDir, parseId("project", requiredFlag(args, "project")));
+  try { return await driveLocked(context, args, answer); }
+  finally { release(); }
+}
+
+/** `drive` while holding the project, so the head checked below cannot move until the command is done. */
+async function driveLocked(context: CommandContext, args: CommandArguments, answer?: { order: string; value: unknown }) {
   const { loop, state } = loopContext(context, args, answer);
   const stale = () => new CliError("STALE_ORDER", `${answer!.order} is not the work order P${loop.projectId} is waiting on; the project moved on, or the order is from another project. Run: scraply next --project P${loop.projectId}`);
   // An order names the step log's head when it was issued; refuse a stale one before any search or run happens.
@@ -122,9 +159,11 @@ export const loopCommands: readonly Command[] = [
     path: ["experiment", "approve"],
     description: "Run the experiment script the loop wrote, once the owner has read it and agreed, and save its output as evidence.",
     flags: [projectFlag, { name: "test", type: "string", required: true, description: "The experiment test." }],
-    run: (context, args) => {
+    run: async (context, args) => {
       const testId = `T${parseId("test", requiredFlag(args, "test"))}`;
-      return runPendingScript(loopContext(context, args).loop, testId);
+      const release = lockProject(context.dataDir, parseId("project", requiredFlag(args, "project")));
+      try { return await runPendingScript(loopContext(context, args).loop, testId); }
+      finally { release(); }
     },
   },
   {
