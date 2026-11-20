@@ -405,6 +405,7 @@ describe("the seed-and-kill-test loop", () => {
       split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
       design: [experiment],
       script: [
+        { files: [{ name: "OWNER/result.txt", content: "x" }], command: ["bun", "a.ts"], explanation: "Into the owner's folder, by another case." },
         { files: [{ name: "data", content: "x" }, { name: "data/run.ts", content: "x" }], command: ["bun", "data/run.ts"], explanation: "Clashing." },
         { files: [{ name: "leftover.ts", content: "x" }, { name: "../escape.ts", content: "x" }], command: ["bun", "a.ts"], explanation: "Bad." },
         { files: [{ name: "lib/data.ts", content: "export {}" }, { name: "a.ts", content: "import './lib/data.ts'" }], command: ["bun", "a.ts"], explanation: "Good." },
@@ -412,7 +413,8 @@ describe("the seed-and-kill-test loop", () => {
     };
     await advance(context());
     await advance(context());
-    // A file that is also another file's folder is refused before anything is written.
+    // The owner's folder under another case, and a file that is also another file's folder, are refused before anything is written.
+    await expect(advance(context())).rejects.toMatchObject({ code: "BAD_ANSWER", message: expect.stringContaining("OWNER/result.txt clashes") });
     await expect(advance(context())).rejects.toMatchObject({ code: "BAD_ANSWER", message: expect.stringContaining("clashes") });
     expect(existsSync(join(root, "work", "T1", "attempt-1", "data"))).toBe(false);
     await expect(advance(context())).rejects.toThrow("outside its folder");

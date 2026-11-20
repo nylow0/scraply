@@ -448,8 +448,12 @@ async function script(context: LoopContext, view: View, claim: ClaimView, test: 
   const outside = targets.find(file => !file.target.startsWith(`${resolve(dir)}${sep}`));
   if (outside) throw new CliError("BAD_ANSWER", `The script named a file outside its folder (${outside.name}). Use relative paths and submit again.`, 2);
   // Two files cannot share a path, a file cannot also be a folder of another, and owner/ holds the owner's files.
-  const taken = [resolve(dir, "owner"), ...targets.map(file => file.target)];
-  const clash = targets.find((file, index) => taken.some((other, at) => at !== index + 1 && (other === file.target || other.startsWith(`${file.target}${sep}`) || file.target.startsWith(`${other}${sep}`))));
+  // Compared without case, since Windows treats OWNER/ and owner/ as one folder.
+  const taken = [resolve(dir, "owner"), ...targets.map(file => file.target)].map(path => path.toLowerCase());
+  const clash = targets.find((file, index) => {
+    const path = file.target.toLowerCase();
+    return taken.some((other, at) => at !== index + 1 && (other === path || other.startsWith(`${path}${sep}`) || path.startsWith(`${other}${sep}`)));
+  });
   if (clash) throw new CliError("BAD_ANSWER", `The script's file ${clash.name} clashes with another file or with the owner/ folder. Give each file its own path and submit again.`, 2);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(join(dir, "owner"), { recursive: true });
@@ -458,7 +462,11 @@ async function script(context: LoopContext, view: View, claim: ClaimView, test: 
     mkdirSync(dirname(file.target), { recursive: true });
     writeFileSync(file.target, file.content);
   }
-  context.ledger.logStep(context.projectId, "script", test.id, { attempt, dir, command: output.command, files: output.files.map(file => file.name), explanation: output.explanation });
+  // runsBefore orders runs saved later by hand against this script without trusting clocks.
+  context.ledger.logStep(context.projectId, "script", test.id, {
+    attempt, dir, command: output.command, files: output.files.map(file => file.name), explanation: output.explanation,
+    runsBefore: view.sources.filter(source => source.test === test.id).length,
+  });
   return context.trust
     ? { step: "script", did: `Wrote attempt ${attempt} for ${test.id} in ${dir}.`, status: "continue" }
     : {
@@ -701,7 +709,11 @@ export async function advance(context: LoopContext): Promise<StepResult> {
     const launchFailedLast = attempts.at(-1)?.launchFailed !== undefined && (!newestRun || newestRun.fetchedAt <= lastRun!.at);
     const lastFailed = launchFailedLast || (newestRun !== undefined && !runSucceeded(context, newestRun));
     // A good run saved after the newest script, such as one run by hand, makes that script unnecessary.
-    const superseded = !lastFailed && newestRun !== undefined && lastScript !== undefined && newestRun.fetchedAt > lastScript.at;
+    // Scripts logged before runsBefore existed fall back to timestamps.
+    const runsBefore = z.object({ runsBefore: z.number() }).safeParse(lastScript?.detail);
+    const savedAfterScript = lastScript !== undefined && newestRun !== undefined
+      && (runsBefore.success ? runs.length > runsBefore.data.runsBefore : newestRun.fetchedAt > lastScript.at);
+    const superseded = !lastFailed && savedAfterScript;
     if (!lastScript || (lastRun && lastRun.id > lastScript.id && lastFailed && attempts.length < MAX_RUNS)) {
       return script(context, view, claim, test, attempts);
     }

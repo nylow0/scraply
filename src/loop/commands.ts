@@ -1,4 +1,5 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { Database } from "bun:sqlite";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { requiredFlag, stringFlag, type CommandArguments } from "../cli/args";
 import type { Command, CommandContext } from "../cli/commands";
@@ -17,33 +18,21 @@ const LEDGER_WRITES = new Set(["createProject", "setArchived", "addNote", "recor
 /** Mechanical steps one `next` or `submit` may run before it hands back; a pass has far fewer. */
 const MAX_STEPS = 40;
 
-/** Whether a process with this ID is running; one we may not signal still counts. */
-function running(pid: number) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; }
-  catch (error) { return error instanceof Error && "code" in error && error.code === "EPERM"; }
-}
-
 /**
- * Hold the project for one `next`, `submit`, or `approve`, so two processes never apply the same answer or run the
- * same script. A lock left by a process that died is taken over. Returns the release.
+ * Hold the project for one `next`, `submit`, `experiment approve`, or `variant accept`, so two processes never apply
+ * the same answer or run the same script. The lock is an exclusive SQLite transaction on <dataDir>/locks/P#.db: the
+ * operating system releases it when the process exits, however it exits. Returns the release.
  */
 function lockProject(dataDir: string, projectId: number) {
-  const dir = join(dataDir, "locks");
-  mkdirSync(dir, { recursive: true });
-  const path = join(dir, `P${projectId}.lock`);
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      writeFileSync(path, String(process.pid), { flag: "wx" });
-      return () => rmSync(path, { force: true });
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
-      const holder = Number(readFileSync(path, "utf8"));
-      if (running(holder)) break;
-      rmSync(path, { force: true });
-    }
+  mkdirSync(join(dataDir, "locks"), { recursive: true });
+  const db = new Database(join(dataDir, "locks", `P${projectId}.db`));
+  try {
+    db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+  } catch {
+    db.close();
+    throw new CliError("BUSY", `Another scraply command is working on P${projectId}. Wait for it to finish, then run the command again.`);
   }
-  throw new CliError("BUSY", `Another scraply command is working on P${projectId}. Wait for it to finish, then run the command again.`);
+  return () => { db.exec("COMMIT"); db.close(); };
 }
 
 /** Everything one loop step needs: the ledger, search, a place to run experiments, and the agent's answer, if any. */
@@ -174,11 +163,18 @@ export const loopCommands: readonly Command[] = [
     run: (context, args) => {
       const projectId = parseId("project", requiredFlag(args, "project"));
       const noteId = `N${parseId("note", args.positionals[0]!)}`;
-      const ledger = context.ledger();
-      const note = ledger.show(projectId).notes.find(item => item.id === noteId);
-      if (!note || note.kind !== "variant" || note.retracted) throw new CliError("NOT_VARIANT", `${noteId} is not a live variant in P${projectId}.`);
-      ledger.logStep(projectId, "accept", noteId, null);
-      return { accepted: noteId, next: `Run: scraply next --project P${projectId}` };
+      const release = lockProject(context.dataDir, projectId);
+      try { return acceptVariant(context, projectId, noteId); }
+      finally { release(); }
     },
   },
 ];
+
+/** Log the owner's choice of variant; the next step splits it into its own idea. */
+function acceptVariant(context: CommandContext, projectId: number, noteId: string) {
+  const ledger = context.ledger();
+  const note = ledger.show(projectId).notes.find(item => item.id === noteId);
+  if (!note || note.kind !== "variant" || note.retracted) throw new CliError("NOT_VARIANT", `${noteId} is not a live variant in P${projectId}.`);
+  ledger.logStep(projectId, "accept", noteId, null);
+  return { accepted: noteId, next: `Run: scraply next --project P${projectId}` };
+}

@@ -472,15 +472,22 @@ describe("scraply CLI", () => {
       .toMatchObject({ data: { steps: [{ step: "script" }, { step: "run", did: expect.stringContaining("exit code 0") }], status: "think", workOrder: { step: "read" } } });
   });
 
-  test("one command at a time works on a project; a lock left by a dead process is taken over", async () => {
+  test("one command at a time works on a project, and a process that dies holding the lock releases it", async () => {
     await scraply("project", "new", "locked", "--seed", "Anything.");
-    const lock = join(env.SCRAPLY_DATA_DIR!, "locks", "P1.lock");
     mkdirSync(join(env.SCRAPLY_DATA_DIR!, "locks"), { recursive: true });
-    writeFileSync(lock, String(process.pid));
-    expect(await scraply("next", "--project", "P1")).toMatchObject({ exitCode: 1, error: { code: "BUSY" } });
-    writeFileSync(lock, "2147483646");
+    const lockFile = join(env.SCRAPLY_DATA_DIR!, "locks", "P1.db");
+    // Another process takes the project's lock and is then killed without releasing it.
+    const holder = Bun.spawn([process.execPath, "-e", `const { Database } = require("bun:sqlite"); const db = new Database(${JSON.stringify(lockFile)}); db.exec("BEGIN EXCLUSIVE"); console.log("held"); setInterval(() => {}, 1000);`], { stdout: "pipe" });
+    try {
+      const reader = holder.stdout.getReader();
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain("held");
+      expect(await scraply("next", "--project", "P1")).toMatchObject({ exitCode: 1, error: { code: "BUSY" } });
+      expect(await scraply("variant", "accept", "N1", "--project", "P1")).toMatchObject({ error: { code: "BUSY" } });
+    } finally {
+      holder.kill(9);
+      await holder.exited;
+    }
     expect(await scraply("next", "--project", "P1")).toMatchObject({ ok: true, data: { status: "think" } });
-    expect(existsSync(lock)).toBe(false);
   });
 
   test("the ledger rejects edits and deletions made behind the CLI's back", async () => {
