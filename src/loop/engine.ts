@@ -164,11 +164,10 @@ function runSucceeded(context: LoopContext, run: { id: string; exitCode?: number
 
 /**
  * A good run saved after the test's newest script, such as one run by hand, which makes running that script
- * unnecessary. Scripts logged before runsBefore existed fall back to timestamps.
+ * unnecessary. Scripts logged before runsBefore existed fall back to timestamps. The caller passes the script and
+ * the test's runs it already read, so a run saved meanwhile cannot change the decision halfway through a step.
  */
-function goodRunSinceScript(context: LoopContext, testId: string) {
-  const script = stepLog(context).last("script", testId);
-  const runs = context.ledger.show(context.projectId).sources.filter(source => source.test === testId);
+function goodRunSinceScript(context: LoopContext, script: { detail: unknown; at: string } | undefined, runs: View["sources"]) {
   const newest = runs.at(-1);
   if (!script || !newest) return undefined;
   const before = z.object({ runsBefore: z.number() }).safeParse(script.detail);
@@ -495,7 +494,7 @@ export async function runPendingScript(context: LoopContext, testId: string): Pr
   if (!pending) throw new CliError("NO_SCRIPT", `${testId} has no script to run yet. Run: scraply next --project P${context.projectId}`);
   const lastRun = stepLog(context).last("run", testId);
   if (lastRun && lastRun.id > pending.id) throw new CliError("ALREADY_RAN", `The newest script for ${testId} already ran. Run: scraply next --project P${context.projectId}`);
-  const replaced = goodRunSinceScript(context, testId);
+  const replaced = goodRunSinceScript(context, pending, context.ledger.show(context.projectId).sources.filter(source => source.test === testId));
   if (replaced) throw new CliError("ALREADY_RAN", `${replaced.id}, a good run saved after the newest script for ${testId}, replaced it, so the script is not run. Run: scraply next --project P${context.projectId}`);
   const detail = z.object({ dir: z.string(), command: z.array(z.string()) }).parse(pending.detail);
   // Refuse a test retracted since its script was written before running anything.
@@ -737,7 +736,7 @@ export async function advance(context: LoopContext): Promise<StepResult> {
     const launchFailedLast = attempts.at(-1)?.launchFailed !== undefined
       && (failedBefore.success ? runs.length <= failedBefore.data.runsBefore : !newestRun || newestRun.fetchedAt <= lastRun!.at);
     const lastFailed = launchFailedLast || (newestRun !== undefined && !runSucceeded(context, newestRun));
-    const superseded = goodRunSinceScript(context, test.id) !== undefined;
+    const superseded = goodRunSinceScript(context, lastScript, runs) !== undefined;
     if (!lastScript || (lastRun && lastRun.id > lastScript.id && lastFailed && attempts.length < MAX_RUNS)) {
       return script(context, view, claim, test, attempts);
     }

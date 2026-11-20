@@ -369,6 +369,30 @@ describe("the seed-and-kill-test loop", () => {
     expect(reviewInputs).toMatchObject({ experimentRuns: [{ run: "S1", exitCode: 1 }, { run: "S2", byHand: true, command: "bun fixed.ts (in /work/fix)", exitCode: 0 }] });
   });
 
+  test("a run saved by hand while a step is deciding waits for the next step instead of skipping the approval", async () => {
+    ledger.createProject("quakes", "Anything.");
+    ledger.logStep(1, "frame", null, { surveyQueries: [] });
+    ledger.logStep(1, "survey", null, { skipped: "test" });
+    answers = {
+      split: [{ idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the baseline.", killIf: "No lift." }], reuse: [] }],
+      design: [{ claim: "C1", why: "Data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known event.", control: "Baseline.", holdout: "Later years.", needsOwner: null, setAside: null }],
+      script: [{ files: [{ name: "a.ts", content: "x" }], command: ["bun", "a.ts"], explanation: "Run." }],
+      read: [{ quotes: [] }],
+    };
+    expect((await advanceUntilBlocked(context(), 3)).at(-1)).toMatchObject({ step: "script", status: "needs-you" });
+    // scraply experiment run takes no project lock, so its run can land just after the step read the project.
+    let saved = false;
+    const racing = new Proxy(ledger, {
+      get: (target, key) => key !== "show" ? Reflect.get(target, key) : (projectId: number) => {
+        const view = target.show(projectId);
+        if (!saved) { saved = true; target.saveRun(1, { command: "bun fixed.ts (in /work/fix)", exitCode: 0, output: "Sanity check passed. Lift 0.12.\n[exit code 0]" }); }
+        return view;
+      },
+    });
+    expect(await step({ ledger: racing })).toMatchObject({ step: "approve", status: "needs-you" });
+    expect(await step()).toMatchObject({ step: "read" });
+  });
+
   test("scripts that could not start reach the verdict and the review as diagnostics, never as runs", async () => {
     ledger.createProject("quakes", "Anything.");
     ledger.logStep(1, "frame", null, { surveyQueries: [] });
