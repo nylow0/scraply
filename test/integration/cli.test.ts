@@ -1,16 +1,12 @@
 import { Database } from "bun:sqlite";
 import { dlopen, ptr, toArrayBuffer, type Pointer } from "bun:ffi";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { createCipheriv, createHash, randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { createCipheriv, randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startBackend } from "../../src/backend/server";
-import { openSecrets } from "../../src/cli/credentials";
 import { openLedger } from "../../src/cli/ledger";
 import { runCli } from "../../src/cli/main";
-import { MODEL_PROVIDER, connectedModels, credentialsToRestore, type ModelSession } from "../../src/cli/model";
-import { ProviderFailure } from "../../src/providers/structured";
 
 // Synthetic forum threads. The first is read before any prediction; the second only afterwards.
 const THREAD = `<!doctype html><html><head><title>Inspection notes &amp; gloves</title><script>var x = "ignored";</script></head>
@@ -366,10 +362,65 @@ describe("scraply CLI", () => {
     expect(await scraply("help", "experiment", "run")).toMatchObject({ data: { commands: [{ usage: "scraply experiment run --test <test> -- <command...>" }] } });
   });
 
-  test("status refuses a model choice it cannot read rather than reporting none", async () => {
-    mkdirSync(env.SCRAPLY_DATA_DIR!, { recursive: true });
-    writeFileSync(join(env.SCRAPLY_DATA_DIR!, "config.json"), "{ not json");
-    expect(await scraply("status")).toMatchObject({ exitCode: 1, error: { code: "CONFIG_UNREADABLE" } });
+  test("next hands each thinking step to the caller as a work order, and submit applies only the answer it was written for", async () => {
+    env.EXA_API_KEY = "synthetic-exa-key";
+    await scraply("project", "new", "hive-notes", "--seed", "Beekeepers lose track of what they saw in each hive.");
+    const first = await scraply("next", "--project", "P1");
+    // Read before matching: Bun's toMatchObject writes its matchers into the object it checks.
+    const frame = (first.data as { workOrder: { order: string } }).workOrder.order;
+    expect(first).toMatchObject({ ok: true, data: { status: "think", workOrder: {
+      step: "frame", order: expect.stringMatching(/^frame-0-[0-9a-f]{8}$/), method: expect.stringContaining("How Scraply works"),
+      inputs: { seed: "Beekeepers lose track of what they saw in each hive." }, sources: [],
+      answerSchema: { type: "object", required: ["framing", "surveyQueries", "questions"] },
+    } } });
+    const framing = { framing: "A keeper would read club forums first.", surveyQueries: ["hive app pricing"], questions: [] };
+
+    // An answer to an order no step asked for, one that breaks the schema, and one that is not JSON are refused; nothing is recorded.
+    expect(await scraply("submit", "--project", "P1", "--order", "frame-0-00000000", "--answer", JSON.stringify(framing))).toMatchObject({ exitCode: 1, error: { code: "STALE_ORDER", message: expect.stringContaining("scraply next --project P1") } });
+    expect(await scraply("submit", "--project", "P1", "--order", frame, "--answer", JSON.stringify({ framing: "Only this." }))).toMatchObject({ exitCode: 2, error: { code: "BAD_ANSWER", message: expect.stringContaining("surveyQueries") } });
+    expect(await scraply("submit", "--project", "P1", "--order", frame, "--answer", "{not json")).toMatchObject({ exitCode: 2, error: { code: "BAD_ANSWER" } });
+    expect(requests).toHaveLength(0);
+
+    // A good answer, piped on stdin, runs on: the survey searches once, then hands back its reading as the next work order.
+    stdin = JSON.stringify(framing);
+    const survey = await scraply("submit", "--project", "P1", "--order", frame);
+    const order = (survey.data as { workOrder: { order: string } }).workOrder.order;
+    expect(survey).toMatchObject({ data: {
+      steps: [{ step: "frame" }, { step: "survey", did: "Ran 1 survey search(es)." }], status: "think",
+      workOrder: { step: "survey", sources: [{ id: "S1", url: "https://shop.example/hive-app", status: "ok" }] },
+    } });
+    // Sources are listed, not inlined: the caller reads them in full with source show.
+    expect(JSON.stringify(survey)).not.toContain("Free for up to five hives");
+    expect(await scraply("next", "--project", "P1")).toMatchObject({ data: { workOrder: { order } } });
+    expect(requests.filter(item => item.url === "https://api.exa.ai/search")).toHaveLength(1);
+
+    stdin = JSON.stringify({ priorArt: "A hive app already sells voice notes per hive (S1).", quotes: [{ source: "S1", text: "Free for up to five hives, then a small monthly fee.", speaker: "Hive app", kind: "vendor" }] });
+    expect(await scraply("submit", "--project", "P1", "--order", order)).toMatchObject({ data: { status: "think", workOrder: { step: "split" } } });
+    expect(await scraply("show", "--project", "P1")).toMatchObject({ data: { quotes: [{ id: "Q1", source: "S1", speaker: "Hive app" }], notes: [{ kind: "framing" }, { kind: "prior-art", quotes: ["Q1"] }] } });
+
+    // An answer to an order already answered, or one written for another project, is refused before anything runs.
+    stdin = JSON.stringify(framing);
+    expect(await scraply("submit", "--project", "P1", "--order", frame)).toMatchObject({ error: { code: "STALE_ORDER" } });
+    await scraply("project", "new", "other", "--seed", "Anything else.");
+    const other = await scraply("next", "--project", "P2");
+    expect(other).toMatchObject({ data: { workOrder: { step: "frame" } } });
+    expect(await scraply("submit", "--project", "P2", "--order", frame)).toMatchObject({ error: { code: "STALE_ORDER" } });
+    expect(await scraply("show", "--project", "P2")).toMatchObject({ data: { notes: [] } });
+    expect(requests.filter(item => item.url === "https://api.exa.ai/search")).toHaveLength(1);
+  });
+
+  test("an answer the loop no longer needs is refused rather than dropped: a resubmitted script cannot replace the one waiting for approval", async () => {
+    await scraply("project", "new", "quakes", "--seed", "Quakes cluster.");
+    const next = async () => (await scraply("next", "--project", "P1", "--skip-questions")).data as { workOrder: { order: string } };
+    const submit = async (order: string, answer: unknown) => { stdin = JSON.stringify(answer); return scraply("submit", "--project", "P1", "--order", order, "--skip-questions"); };
+    await submit((await next()).workOrder.order, { framing: "A seismologist would query the catalog.", surveyQueries: [], questions: [] });
+    await submit((await next()).workOrder.order, { idea: { title: "Forecaster", pitch: "Odds." }, claims: [{ kind: "mechanism", statement: "It beats the base rate.", killIf: "No lift on held-out years." }], reuse: [] });
+    await submit((await next()).workOrder.order, { claim: "C1", why: "Free data.", kind: "experiment", method: "Fit.", prediction: "Lift.", stopWhen: "One run.", queries: [], cuts: [], sanity: "Known swarm.", control: "Base rate.", holdout: "Later years.", needsOwner: null, setAside: null });
+    const script = (await next()).workOrder.order;
+    expect(await submit(script, { files: [{ name: "run.ts", content: "console.log(1)" }], command: ["bun", "run.ts"], explanation: "First." })).toMatchObject({ data: { status: "needs-you", next: expect.stringContaining("experiment approve") } });
+    // The owner asks for a change; resubmitting the answered order must not look like it worked.
+    expect(await submit(script, { files: [{ name: "run.ts", content: "console.log(2)" }], command: ["bun", "run.ts"], explanation: "Changed." })).toMatchObject({ error: { code: "STALE_ORDER" } });
+    expect(readFileSync(join(env.SCRAPLY_DATA_DIR!, "work", "P1", "T1", "attempt-1", "run.ts"), "utf8")).toBe("console.log(1)");
   });
 
   test("the ledger rejects edits and deletions made behind the CLI's back", async () => {
@@ -406,16 +457,15 @@ describe("scraply CLI", () => {
     writeFileSync(join(profile, "secrets.bin"), Buffer.concat([Buffer.from("v10"), nonce, sealed, cipher.getAuthTag()]));
 
     const status = await scraply("status");
-    expect(status).toMatchObject({ data: { searchProviders: ["exa"], desktopDatabase: false } });
+    expect(status).toMatchObject({ data: { searchProviders: ["exa"] } });
     expect(JSON.stringify(status)).not.toContain("saved-exa-key");
     await scraply("project", "new", "keys", "--seed", "Anything.");
     await scraply("search", "hive app pricing", "--project", "P1");
     expect(new Headers(requests[0]!.headers).get("x-api-key")).toBe("saved-exa-key");
   });
 
-  test.skipIf(process.platform !== "win32")("keys piped into key set are saved encrypted and used by search, and models answers signed-out without a worker", async () => {
-    expect(await scraply("status")).toMatchObject({ data: { searchProviders: [], modelAccount: "signed-out" } });
-    expect(await scraply("models")).toMatchObject({ exitCode: 1, error: { code: "SIGNED_OUT" } });
+  test.skipIf(process.platform !== "win32")("keys piped into key set are saved encrypted and used by search", async () => {
+    expect(await scraply("status")).toMatchObject({ data: { searchProviders: [] } });
 
     stdin = "two words\n";
     expect(await scraply("key", "set", "exa")).toMatchObject({ exitCode: 2, error: { code: "USAGE" } });
@@ -432,113 +482,6 @@ describe("scraply CLI", () => {
     expect(await scraply("status")).toMatchObject({ data: { searchProviders: [] } });
   });
 
-  test.skipIf(process.platform !== "win32")("logout deletes the saved account even when the model worker cannot start", async () => {
-    const secrets = openSecrets(join(env.APPDATA!, "scraply"));
-    const current = secrets.load();
-    await secrets.save({ ...current, exaApiKey: "kept-exa-key", providerCredentials: { [MODEL_PROVIDER]: "synthetic-account" } });
-    env.SCRAPLY_AGENT_PATH = join(root, "missing", "scraply-agent.exe");
-    expect(await scraply("status")).toMatchObject({ data: { modelAccount: "saved" } });
-    expect(await scraply("logout")).toMatchObject({ data: { connected: false } });
-    expect(openSecrets(join(env.APPDATA!, "scraply")).load()).toMatchObject({ exaApiKey: "kept-exa-key", providerCredentials: {} });
-  });
-
-  test.skipIf(process.platform !== "win32")("logout never deletes or revokes a sign-in another process saved while it was signing out", async () => {
-    const profile = join(env.APPDATA!, "scraply");
-    const secrets = openSecrets(profile);
-    await secrets.save({ ...secrets.load(), providerCredentials: { [MODEL_PROVIDER]: "account-a" } });
-    const other = openSecrets(profile);
-    let revoked = 0;
-    // Another process signs in to account B while this worker starts, so the worker restores B.
-    const models = async () => {
-      await other.save({ ...other.load(), providerCredentials: { [MODEL_PROVIDER]: "account-b" } });
-      return {
-        client: { logout: async () => { revoked += 1; } }, held: () => "account-b",
-        persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
-      } as unknown as ModelSession;
-    };
-    let output = "";
-    await runCli(["logout"], { write: text => { output += text; }, notify: () => undefined, isTTY: false, env, models });
-    expect(JSON.parse(output)).toMatchObject({ ok: false, error: { code: "CREDENTIALS_CONFLICT" } });
-    expect(openSecrets(profile).load().providerCredentials).toEqual({ [MODEL_PROVIDER]: "account-b" });
-    expect(revoked).toBe(0);
-  });
-
-  test.skipIf(process.platform !== "win32")("logout revokes the account it checked before deleting it", async () => {
-    const profile = join(env.APPDATA!, "scraply");
-    const secrets = openSecrets(profile);
-    await secrets.save({ ...secrets.load(), providerCredentials: { [MODEL_PROVIDER]: "account-a" } });
-    const savedAtRevoke: (string | undefined)[] = [];
-    const session = {
-      client: { logout: async () => { savedAtRevoke.push(openSecrets(profile).load().providerCredentials[MODEL_PROVIDER]); } },
-      held: () => "account-a", persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
-    } as unknown as ModelSession;
-    let output = "";
-    await runCli(["logout"], { write: text => { output += text; }, notify: () => undefined, isTTY: false, env, models: async () => session });
-    expect(JSON.parse(output)).toMatchObject({ ok: true, data: { connected: false } });
-    expect(savedAtRevoke).toEqual(["account-a"]);
-    expect(openSecrets(profile).load().providerCredentials).toEqual({});
-  });
-
-  test("a restarted worker restores only the accounts its process began with", () => {
-    const saved = { [MODEL_PROVIDER]: "account-b", other: "kept" };
-    expect(credentialsToRestore(saved, undefined)).toEqual([[MODEL_PROVIDER, "account-b"], ["other", "kept"]]);
-    // Another process signed in to B while this one held A: the restarted worker leaves B alone.
-    expect(credentialsToRestore(saved, { [MODEL_PROVIDER]: "account-a", other: "kept" })).toEqual([["other", "kept"]]);
-  });
-
-  test("only a rejected sign-in asks to sign in again; an outage says to try later without refreshing", async () => {
-    let refreshed = 0;
-    const session = (failure: ProviderFailure) => ({
-      client: {
-        listModels: async () => { if (!refreshed) throw failure; return []; },
-        refreshAccount: async () => { refreshed += 1; },
-        listAccounts: async () => [],
-      },
-      persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
-    }) as unknown as ModelSession;
-    await expect(connectedModels(session(new ProviderFailure("unavailable", "Service down", true)))).rejects.toMatchObject({ code: "MODEL_UNREACHABLE" });
-    expect(refreshed).toBe(0);
-    expect(await connectedModels(session(new ProviderFailure("auth", "Token expired", false)))).toMatchObject({ models: [] });
-    expect(refreshed).toBe(1);
-
-    // A refresh the provider refuses needs a new sign-in, not a later retry.
-    const refused = {
-      client: {
-        listModels: async () => { throw new ProviderFailure("auth", "Token expired", false); },
-        refreshAccount: async () => { throw new ProviderFailure("unavailable", "Sign in again", false, { runtimeCode: "reconnect_required" }); },
-        listAccounts: async () => [],
-      },
-      persist: async () => undefined, hasSavedAccount: () => true, close: async () => undefined,
-    } as unknown as ModelSession;
-    await expect(connectedModels(refused)).rejects.toMatchObject({ code: "SIGNED_OUT" });
-  });
-
-  test("legacy export writes every desktop project with the app's own exporters and leaves the database untouched", async () => {
-    // The app's layout: its data folder sits inside the Electron profile, %APPDATA%scraplyscraply.
-    const data = join(env.APPDATA!, "scraply", "scraply");
-    mkdirSync(data, { recursive: true });
-    const desktop = await startBackend({
-      dataDir: data, dbPath: join(data, "scraply.db"), bundledPromptsDir: join(process.cwd(), "prompts"), promptOverridesDir: join(data, "prompts"),
-      appVersion: "test", getSecrets: () => ({ exaApiKey: null }),
-      providerValidation: { inspectNative: async () => ({ available: false, connected: false, accounts: [], models: [] }) },
-    }, () => undefined);
-    await fetch(`http://127.0.0.1:${desktop.port}/threads`, {
-      method: "POST", headers: { authorization: `Bearer ${desktop.token}`, "content-type": "application/json" }, body: JSON.stringify({ title: "Synthetic orchard project" }),
-    });
-    await desktop.close();
-    const hash = () => createHash("sha256").update(readFileSync(join(data, "scraply.db"))).digest("hex");
-    const before = hash();
-
-    expect(await scraply("status")).toMatchObject({ data: { desktopDatabase: true } });
-    const out = join(root, "desktop-export");
-    expect(await scraply("legacy", "export", "--out", out)).toMatchObject({ data: { projects: 1, withResearch: 0 } });
-    expect(hash()).toBe(before);
-    expect(existsSync(join(out, "scraply-snapshot.db"))).toBe(true);
-    const index = JSON.parse(readFileSync(join(out, "index.json"), "utf8")) as { folder: string; title: string; problems?: string[] }[];
-    expect(index).toMatchObject([{ folder: "001-synthetic-orchard-project", title: "Synthetic orchard project", problems: [expect.stringContaining("research")] }]);
-    expect(readdirSync(join(out, index[0]!.folder, "ideas-md"))).toContain("idea-history.md");
-    expect(await scraply("legacy", "export", "--out", out)).toMatchObject({ error: { code: "OUT_NOT_EMPTY" } });
-  }, 60_000);
 });
 
 /** Wrap bytes with the current user's DPAPI key, as Chromium does for its `Local State` key. */

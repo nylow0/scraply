@@ -1,6 +1,5 @@
 import { z } from "zod";
 import type { Source } from "../shared/schemas";
-import type { ResearchGoalKind } from "../shared/research-frame";
 import type { SearchOptions, SearchProvider, SearchProviderChoice } from "./search";
 
 export const SourceRouteSchema = z.enum(["open-web", "community", "issue-tracker", "social", "studies-official", "alternatives", "contrary", "buying"]);
@@ -21,7 +20,6 @@ export const SourceVenueSchema = z.object({
 }).strict();
 export type SourceVenue = z.infer<typeof SourceVenueSchema>;
 export interface SourceRoutingContext {
-  goalKind?: ResearchGoalKind;
   venues?: SourceVenue[];
   languages?: string[];
   region?: string;
@@ -29,10 +27,6 @@ export interface SourceRoutingContext {
   socialEnabled?: boolean;
   excludedFirsthandDomains?: string[];
   previousFirsthandRoute?: SourceRoute;
-  /** Old completed extraction inputs must retain their saved sources; new provider results are still filtered. */
-  preserveHistoricalSources?: boolean;
-  /** Saved routing version 1 retains its original publication filter and search receipt identities. */
-  legacyPublicationDomainCategory?: boolean;
   now?: Date;
 }
 
@@ -90,7 +84,7 @@ export function routingLanguages(languages: readonly string[] = []): string[] {
   return [...new Set(["en", ...languages.map((language) => language.trim().toLowerCase()).filter((language) => /^[a-z]{2}$/.test(language))])].slice(0, 3);
 }
 
-/** Frame venues must be verified by the caller before this helper receives them. */
+/** Venues must be verified by the caller (`validateResearchVenues`) before this helper receives them. */
 export function routeSearchOptions(route: SourceRoute, context: SourceRoutingContext = {}, pairedFirsthand = false): SearchOptions {
   const firsthand = ["community", "issue-tracker", "social"].includes(route) || pairedFirsthand;
   const denied = [...EXCLUDED_SOURCE_DOMAINS, ...(firsthand ? context.excludedFirsthandDomains ?? [] : [])];
@@ -113,25 +107,11 @@ export function routeSearchOptions(route: SourceRoute, context: SourceRoutingCon
     excludeDomains: denied,
     ...(includeDomains.length ? { includeDomains } : {}),
     // Publication's index rejects some verified domains. Explicit venues use ordinary web search;
-    // only broad study searches use the publication index. Saved runs retain their original contract.
-    ...(route === "studies-official" && (context.legacyPublicationDomainCategory
-      ? !selectedVenues.some(venue => venue.kind === "official") : includeDomains.length === 0) ? { category: "publication" as const }
+    // only broad study searches use the publication index.
+    ...(route === "studies-official" && includeDomains.length === 0 ? { category: "publication" as const }
       : route === "contrary" ? { category: "news" as const } : {}),
     ...(firsthand || route === "buying" ? { startPublishedDate: start.toISOString() } : {}),
     ...(firsthand || route === "studies-official" ? { languages: routingLanguages(context.languages) } : {}),
     ...(context.region && /^[a-z]{2}$/i.test(context.region) ? { userLocation: context.region.toUpperCase() } : {}),
   };
-}
-
-export function vendorDominatedDomains(factors: ReadonlyArray<{ sourceRole: string; source: { url: string } }>): string[] {
-  const counts = new Map<string, { total: number; vendor: number }>();
-  for (const factor of factors) {
-    const host = sourceHostname(factor.source.url);
-    if (!host) continue;
-    const count = counts.get(host) ?? { total: 0, vendor: 0 };
-    count.total += 1;
-    if (factor.sourceRole === "vendor" || factor.sourceRole === "illustration") count.vendor += 1;
-    counts.set(host, count);
-  }
-  return [...counts.entries()].filter(([, count]) => count.vendor / count.total >= 0.8).map(([host]) => host);
 }

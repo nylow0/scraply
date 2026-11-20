@@ -4,39 +4,25 @@ import type { Command, CommandContext } from "../cli/commands";
 import { availableProviders, searchKey } from "../cli/credentials";
 import { runExperimentCommand } from "../cli/experiment";
 import { parseId } from "../cli/ledger";
-import { MODEL_PROVIDER, connectedModels } from "../cli/model";
 import { CliError } from "../cli/output";
 import { fetchDirect, search } from "../cli/pages";
-import { REASONING_EFFORTS } from "../shared/runtime-protocol";
-import { advance, advanceUntilBlocked, runPendingScript, type LoopContext } from "./engine";
-import { modelThinker, readConfig, writeConfig } from "./think";
+import { advance, runPendingScript, type LoopContext, type StepResult } from "./engine";
+import { ThinkNeeded, agentThinker, headStep, workOrder } from "./think";
 
 const RESULTS_PER_SEARCH = 5;
 const RUN_TIMEOUT_MS = 30 * 60_000;
+/** Mechanical steps one `next` or `submit` may run before it hands back; a pass has far fewer. */
+const MAX_STEPS = 40;
 
-/** The efforts a model lists that the worker can send. A model that lists none offers none, so nothing is guessed. */
-function usableEfforts(model: { supportedReasoningEfforts?: readonly string[] | undefined }) {
-  return (model.supportedReasoningEfforts ?? []).filter(effort => (REASONING_EFFORTS as readonly string[]).includes(effort));
-}
-
-/** Everything one loop step needs: the ledger, the chosen model, search, and a place to run experiments. */
-async function loopContext(context: CommandContext, args: CommandArguments): Promise<LoopContext> {
+/** Everything one loop step needs: the ledger, search, a place to run experiments, and the agent's answer, if any. */
+function loopContext(context: CommandContext, args: CommandArguments, answer?: { order: string; value: unknown }) {
   const projectId = parseId("project", requiredFlag(args, "project"));
   const ledger = context.ledger();
   ledger.requireProject(projectId);
-  const config = readConfig(context.dataDir);
-  const session = await context.models();
-  const { models } = await connectedModels(session);
-  const model = models.find(item => item.identity.modelId === config.model);
-  // A saved model that is gone blocks work until the owner picks another; never substitute one.
-  if (!model) throw new CliError("MODEL_UNAVAILABLE", `${config.model} is no longer available to this account. Pick another: scraply models, then scraply config model <id> --effort <effort>`);
-  if (!usableEfforts(model).includes(config.effort)) {
-    throw new CliError("MODEL_UNAVAILABLE", `${config.model} no longer offers effort ${config.effort}; it supports ${usableEfforts(model).join(", ") || "none Scraply can use"}. Pick a model and effort with: scraply config model <id> --effort <effort>`);
-  }
   const provider = availableProviders(context.profileDir, context.env)[0];
-  return {
-    ledger, projectId, notify: context.notify,
-    think: modelThinker(session.client, { providerId: MODEL_PROVIDER, modelId: config.model }, config.effort),
+  const { think, state } = agentThinker(ledger, projectId, answer);
+  const loop: LoopContext = {
+    ledger, projectId, notify: context.notify, think,
     ...(provider ? {
       searchWeb: async (query: string) => {
         const found = await search(provider, searchKey(provider, context.profileDir, context.env), query, RESULTS_PER_SEARCH, context.fetcher);
@@ -50,60 +36,75 @@ async function loopContext(context: CommandContext, args: CommandArguments): Pro
     tools: [`bun ${Bun.version} (TypeScript, fetch built in)`, ...(Bun.which("uv") ? ["uv (Python: uv run --with <packages> script.py)"] : [])],
     trust: args.flags.trust === true,
     skipQuestions: args.flags["skip-questions"] === true,
-    agentFindings: args.flags["agent-findings"] === true,
   };
+  return { loop, state };
+}
+
+/**
+ * Run steps until one needs thinking (a work order for the caller), needs the owner, or the pass is done.
+ * With an answer, the step it was written for runs first; an answer no step asked for is refused.
+ */
+async function drive(context: CommandContext, args: CommandArguments, answer?: { order: string; value: unknown }) {
+  const { loop, state } = loopContext(context, args, answer);
+  const stale = () => new CliError("STALE_ORDER", `${answer!.order} is not the work order P${loop.projectId} is waiting on; the project moved on, or the order is from another project. Run: scraply next --project P${loop.projectId}`);
+  // An order names the step log's head when it was issued; refuse a stale one before any search or run happens.
+  if (answer && answer.order.split("-")[1] !== String(headStep(loop.ledger, loop.projectId))) throw stale();
+  const steps: StepResult[] = [];
+  const stop = (result: Record<string, unknown>) => {
+    if (answer && !state.used) throw stale();
+    return { steps, ...result };
+  };
+  try {
+    while (steps.length < MAX_STEPS) {
+      const result = await advance(loop);
+      steps.push(result);
+      context.notify(`[${result.step}] ${result.did}`);
+      if (result.status !== "continue") return stop({ status: result.status, ...(result.next ? { next: result.next } : {}) });
+    }
+    return stop({ status: "paused", next: `Stopped after ${MAX_STEPS} steps. Run: scraply next --project P${loop.projectId}` });
+  } catch (error) {
+    if (!(error instanceof ThinkNeeded)) throw error;
+    return stop({ status: "think", workOrder: workOrder(error.request, loop.ledger, loop.projectId) });
+  }
 }
 
 const projectFlag = { name: "project", type: "string", required: true, description: "Project ID." } as const;
 const loopFlags = [
   projectFlag,
-  { name: "trust", type: "boolean", description: "Run model-written experiment scripts without stopping for you to read them first." },
-  { name: "skip-questions", type: "boolean", description: "Go on without answering the framing questions." },
-  { name: "agent-findings", type: "boolean", description: "Stop when the pass is finished so you write the findings and variants, instead of Scraply's model." },
+  { name: "trust", type: "boolean", description: "Run experiment scripts without stopping for the owner to read them first." },
+  { name: "skip-questions", type: "boolean", description: "Go on without the owner's answers to the framing questions, using the assumptions the framing stated." },
 ] as const;
 
 export const loopCommands: readonly Command[] = [
   {
-    path: ["config", "model"],
-    description: "Choose the model and reasoning effort the loop thinks with. Scraply never picks one for you.",
-    positionals: [{ name: "model", description: "A model ID from: scraply models", required: true }],
-    flags: [{ name: "effort", type: "string", required: true, description: "One of the model's efforts from: scraply models" }],
-    run: async (context, args) => {
-      const { models } = await connectedModels(await context.models());
-      const model = models.find(item => item.identity.modelId === args.positionals[0]);
-      if (!model) throw new CliError("MODEL_UNAVAILABLE", `${args.positionals[0]} is not available to this account. See: scraply models`);
-      const effort = requiredFlag(args, "effort");
-      if (!usableEfforts(model).includes(effort)) {
-        throw new CliError("USAGE", `${model.identity.modelId} supports efforts: ${usableEfforts(model).join(", ") || "none Scraply can use"}.`, 2);
-      }
-      writeConfig(context.dataDir, { model: model.identity.modelId, effort });
-      return { model: model.identity.modelId, effort };
-    },
-  },
-  {
     path: ["next"],
-    description: "Run the one step the project needs next: frame, survey, split, design, gather, script, read, verdict, review, or findings.",
+    description: "Run the loop until it needs thinking, the owner, or nothing more. status think returns a work order: do it and answer with scraply submit. needs-you says what the owner must do; done means the pass is finished.",
     flags: [...loopFlags],
-    run: async (context, args) => advance(await loopContext(context, args)),
+    run: (context, args) => drive(context, args),
   },
   {
-    path: ["auto"],
-    description: "Run steps until one needs you (answers, an experiment to approve, a variant to choose) or the pass is done.",
-    flags: [...loopFlags, { name: "max-steps", type: "number", description: "Stop after this many steps (default 40)." }],
+    path: ["submit"],
+    description: "Answer a work order from scraply next with JSON matching its answerSchema. The ledger checks it (quotes verbatim, verdict rules); a refusal says what to fix. The loop then runs on to the next work order or stop.",
+    flags: [
+      ...loopFlags,
+      { name: "order", type: "string", required: true, description: "The work order's order ID." },
+      { name: "answer", type: "string", description: "The answer as JSON. Without it, the JSON is read from stdin." },
+    ],
     run: async (context, args) => {
-      const steps = await advanceUntilBlocked(await loopContext(context, args), Math.max(1, Number(stringFlag(args, "max-steps") ?? 40)));
-      const last = steps.at(-1)!;
-      if (last.status === "continue") return { steps, status: "paused", next: "Stopped at --max-steps. Run the same auto command again to go on." };
-      return { steps, status: last.status, ...(last.next ? { next: last.next } : {}) };
+      const text = stringFlag(args, "answer") ?? await context.readStdin();
+      let value: unknown;
+      try { value = JSON.parse(text); }
+      catch { throw new CliError("BAD_ANSWER", "The answer is not valid JSON.", 2); }
+      return drive(context, args, { order: requiredFlag(args, "order"), value });
     },
   },
   {
     path: ["experiment", "approve"],
-    description: "Run the experiment script the loop wrote, after reading it, and save its output as evidence.",
+    description: "Run the experiment script the loop wrote, once the owner has read it and agreed, and save its output as evidence.",
     flags: [projectFlag, { name: "test", type: "string", required: true, description: "The experiment test." }],
-    run: async (context, args) => {
+    run: (context, args) => {
       const testId = `T${parseId("test", requiredFlag(args, "test"))}`;
-      return runPendingScript(await loopContext(context, args), testId);
+      return runPendingScript(loopContext(context, args).loop, testId);
     },
   },
   {
@@ -118,7 +119,7 @@ export const loopCommands: readonly Command[] = [
       const note = ledger.show(projectId).notes.find(item => item.id === noteId);
       if (!note || note.kind !== "variant" || note.retracted) throw new CliError("NOT_VARIANT", `${noteId} is not a live variant in P${projectId}.`);
       ledger.logStep(projectId, "accept", noteId, null);
-      return { accepted: noteId, next: `Run: scraply auto --project P${projectId}, with --agent-findings if you write the findings.` };
+      return { accepted: noteId, next: `Run: scraply next --project P${projectId}` };
     },
   },
 ];

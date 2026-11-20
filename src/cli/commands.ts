@@ -4,30 +4,49 @@ import { commandUsage, globalFlags, listFlag, requiredFlag, stringFlag, type Com
 import { availableProviders, openSecrets, searchKey, type SearchProvider } from "./credentials";
 import {
   CLAIM_KINDS, FILE_ORIGINS, MAX_SOURCE_CHARS, NOTE_KINDS, QUOTE_KINDS, RETRACTABLE, REVIEW_RESULTS, TEST_KINDS, VERDICT_RESULTS,
-  parseAnyId, parseId, type Ledger,
+  openLedger, parseAnyId, parseId, type Ledger,
 } from "./ledger";
-import { desktopDatabasePath, exportDesktopProjects } from "./legacy";
-import { MODEL_PROVIDER, connectedModels, findRuntime, type ModelSession } from "./model";
 import { CliError } from "./output";
 import { fetchDirect, fetchViaExa, search } from "./pages";
 import { loopCommands } from "../loop/commands";
-import { readConfig, type LoopConfig } from "../loop/think";
 import { runExperimentCommand } from "./experiment";
 import { renderReport } from "./report";
 
 export interface CommandContext {
   ledger: () => Ledger;
-  /** The model worker with the saved account restored, started on first use. */
-  models: () => Promise<ModelSession>;
   dataDir: string;
-  /** The Scraply profile folder (%APPDATA%\scraply): encrypted keys and account, and the desktop app's data. */
+  /** The Scraply profile folder (%APPDATA%\scraply), which holds the encrypted search keys. */
   profileDir: string;
   env: Record<string, string | undefined>;
   fetcher: typeof fetch;
   /** Tell the person at the terminal something; never part of the JSON result. */
   notify: (text: string) => void;
   readStdin: () => Promise<string>;
-  openUrl: (url: string) => void;
+}
+
+export interface ContextOptions {
+  env?: Record<string, string | undefined>;
+  fetcher?: typeof fetch;
+  notify?: (text: string) => void;
+  readStdin?: () => Promise<string>;
+  /** The ledger folder; defaults to SCRAPLY_DATA_DIR, then %APPDATA%\scraply\cli. */
+  dataDir?: string | undefined;
+}
+
+/** The context one command runs in, for a CLI call or an MCP tool call. The ledger opens on first use; `close` it after. */
+export function commandContext(options: ContextOptions) {
+  const env = options.env ?? process.env;
+  const appData = env.APPDATA ?? join(env.USERPROFILE ?? ".", "AppData", "Roaming");
+  const profileDir = join(appData, "scraply");
+  const dataDir = options.dataDir ?? env.SCRAPLY_DATA_DIR ?? join(profileDir, "cli");
+  let ledger: Ledger | undefined;
+  const context: CommandContext = {
+    ledger: () => (ledger ??= openLedger(dataDir)),
+    dataDir, profileDir, env, fetcher: options.fetcher ?? fetch,
+    notify: options.notify ?? (text => { process.stderr.write(`${text}\n`); }),
+    readStdin: options.readStdin ?? (() => Bun.stdin.text()),
+  };
+  return { context, close: () => ledger?.close() };
 }
 
 export interface Command extends CommandShape {
@@ -51,82 +70,14 @@ const projectFlag = { name: "project", type: "string", required: true, descripti
 const ledgerCommands: readonly Command[] = [
   {
     path: ["status"],
-    description: "Show the ledger folder, which search providers have a key, whether a model account is saved, the chosen model, and whether the model worker and the desktop app's database exist.",
-    run: context => {
-      let runtime: string;
-      try { runtime = findRuntime(context.env)?.executablePath ?? "missing"; }
-      catch { runtime = "invalid"; }
-      let model: LoopConfig | null = null;
-      try { model = readConfig(context.dataDir); }
-      catch (error) { if (!(error instanceof CliError && error.code === "NO_MODEL")) throw error; }
-      return {
-        dataDir: context.dataDir,
-        searchProviders: availableProviders(context.profileDir, context.env),
-        modelAccount: openSecrets(context.profileDir).load().providerCredentials[MODEL_PROVIDER] ? "saved" : "signed-out",
-        model,
-        runtime,
-        desktopDatabase: existsSync(desktopDatabasePath(context.profileDir)),
-      };
-    },
+    description: "Show the ledger folder and which search providers have a key.",
+    run: context => ({ dataDir: context.dataDir, searchProviders: availableProviders(context.profileDir, context.env) }),
   },
   {
-    path: ["login"],
-    description: "Sign in to the OpenAI subscription account that runs the model. Opens the browser and waits up to five minutes.",
-    flags: [{ name: "method", type: "string", choices: ["browser", "device"], description: "browser (default) or device, which shows a code to enter at a URL." }],
-    run: async (context, args) => {
-      const session = await context.models();
-      const login = await session.client.startLogin(MODEL_PROVIDER, stringFlag(args, "method") === "device" ? "device" : "browser");
-      const url = login.method === "device" ? login.verificationUrl : login.authorizationUrl;
-      context.notify(login.method === "device" ? `Open ${url} and enter the code ${login.userCode}.` : `Finish signing in in the browser: ${url}`);
-      context.openUrl(url);
-      for (let attempt = 0; attempt < 300; attempt += 1) {
-        const result = await session.client.completeLogin(login.loginId, session.persist);
-        if (result) {
-          const { models } = await connectedModels(session);
-          return { connected: true, plan: result.account.plan ?? null, models: models.length };
-        }
-        await new Promise(resolve => setTimeout(resolve, 1_000));
-      }
-      await session.client.cancelLogin(login.loginId).catch(() => undefined);
-      throw new CliError("LOGIN_TIMEOUT", "Sign-in did not finish within five minutes. Run: scraply login");
-    },
-  },
-  {
-    path: ["logout"],
-    description: "Sign out of the model account and delete its saved credential.",
-    run: async context => {
-      // The saved credential goes even when the worker is missing or fails; the account is revoked when the worker starts.
-      // A sign-in another process saves meanwhile is refused as a conflict. The revoke runs right after the check, while
-      // the worker still holds the account read here: the client restarts a stopped worker, which restores whatever is saved then.
-      const secrets = openSecrets(context.profileDir);
-      const current = secrets.load();
-      const session = await context.models().catch(() => undefined);
-      if (session && session.held(MODEL_PROVIDER) !== current.providerCredentials[MODEL_PROVIDER]) {
-        throw new CliError("CREDENTIALS_CONFLICT", "The model account changed in another Scraply process. Run the command again.");
-      }
-      await session?.client.logout(MODEL_PROVIDER).catch(() => undefined);
-      const providerCredentials = { ...current.providerCredentials };
-      delete providerCredentials[MODEL_PROVIDER];
-      await secrets.save({ ...current, providerCredentials });
-      return { connected: false };
-    },
-  },
-  {
-    path: ["models"],
-    description: "List the models the signed-in account can run, with their reasoning efforts.",
-    run: async context => {
-      // Answer a signed-out profile without starting the worker.
-      if (!openSecrets(context.profileDir).load().providerCredentials[MODEL_PROVIDER]) throw new CliError("SIGNED_OUT", "No model account. Sign in with: scraply login");
-      const { account, models } = await connectedModels(await context.models());
-      return {
-        plan: account?.plan ?? null,
-        models: models.map(model => ({
-          id: model.identity.modelId, name: model.displayName,
-          ...(model.supportedReasoningEfforts ? { efforts: model.supportedReasoningEfforts } : {}),
-          ...(model.defaultReasoningEffort ? { defaultEffort: model.defaultReasoningEffort } : {}),
-        })),
-      };
-    },
+    path: ["mcp"],
+    description: "Serve every command except key set and key remove as an MCP tool over stdio, until stdin closes. Register it with an agent, such as: claude mcp add scraply -- scraply mcp",
+    // Imported here because the server reads this command table.
+    run: async context => (await import("./mcp")).serveMcp({ dataDir: context.dataDir, env: context.env, fetcher: context.fetcher, notify: context.notify }),
   },
   {
     path: ["key", "set"],
@@ -432,15 +383,9 @@ const ledgerCommands: readonly Command[] = [
       return { path, format, claims: data.claims.length, ideas: data.ideas.length, sources: data.sources.length };
     },
   },
-  {
-    path: ["legacy", "export"],
-    description: "Export every project from the desktop app's database once, read-only: a snapshot of the database plus each project's research JSON and ideas as JSON and Markdown.",
-    flags: [{ name: "out", type: "string", description: "An empty or new folder (default %APPDATA%\\scraply\\desktop-export)." }],
-    run: (context, args) => exportDesktopProjects(context.profileDir, resolve(stringFlag(args, "out") ?? join(context.profileDir, "desktop-export"))),
-  },
 ];
 
-/** Every command: the ledger and search commands an agent can drive by hand, and the loop that drives them with the model. */
+/** Every command: the ledger and search commands an agent can drive by hand, and the loop that hands it work orders. */
 export const commands: readonly Command[] = [...ledgerCommands, ...loopCommands];
 
 export function describeCommands(prefix: readonly string[]) {

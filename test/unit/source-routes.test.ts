@@ -1,20 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { chooseSearchProvider, filterRoutedSources, isContentFarm, routeSearchOptions, routingLanguages, searchRoutes, vendorDominatedDomains } from "../../src/providers/source-routes";
-import { researchSearchAllocation } from "../../src/shared/research-revisions";
-import { discoveryRunProjection, framedDiscoveryProjection } from "../../src/shared/discovery-projection";
+import { chooseSearchProvider, filterRoutedSources, isContentFarm, routeSearchOptions, routingLanguages, searchRoutes } from "../../src/providers/source-routes";
 import { ExaClient } from "../../src/providers/exa";
 import { PerplexityClient } from "../../src/providers/perplexity";
 import type { SourceRoutingContext } from "../../src/providers/source-routes";
 
 describe("source routing", () => {
-  test("counts paired translated scans and scoped investigations while retaining legacy projections", () => {
-    expect(framedDiscoveryProjection("quick")).toEqual(framedDiscoveryProjection("quick", 3));
-    expect(framedDiscoveryProjection("quick", 1)).toMatchObject({ searches: 66 });
-    expect(framedDiscoveryProjection("quick", 3)).toMatchObject({ searches: 186 });
-    expect(framedDiscoveryProjection("standard", 3)).toMatchObject({ searches: 405 });
-    expect(discoveryRunProjection("standard", 4, 1, false)).toEqual({ modelCalls: 16, searches: 16, factorCap: 80 });
-    expect(framedDiscoveryProjection("quick", 3).modelCalls).toBe(framedDiscoveryProjection("quick", 1).modelCalls);
-  });
   test("keeps verified study domains outside the publication category and retains broad publication search", () => {
     expect(routeSearchOptions("studies-official", { venues: [{ name: "Government reports", domain: "ons.gov.uk", kind: "official" }] }))
       .toMatchObject({ includeDomains: ["ons.gov.uk"] });
@@ -72,27 +62,6 @@ describe("source routing", () => {
     expect(options.startPublishedDate).toBeUndefined();
     expect(options.excludeDomains).toEqual(["worldmetrics.org", "linkedin.com"]);
   });
-  test("retains version 1 publication-domain parameters for historical search identities", () => {
-    const context: SourceRoutingContext = { legacyPublicationDomainCategory: true, languages: ["en"], venues: [
-      { name: "BMC studies", domain: "bmchealthservres.biomedcentral.com", kind: "publication" },
-      { name: "JMIR studies", domain: "mhealth.jmir.org", kind: "publication" },
-    ] };
-    expect(routeSearchOptions("studies-official", context)).toEqual({ route: "studies-official",
-      includeDomains: ["bmchealthservres.biomedcentral.com", "mhealth.jmir.org"],
-      excludeDomains: ["worldmetrics.org", "linkedin.com"], category: "publication", languages: ["en"] });
-    expect(routeSearchOptions("studies-official", { ...context, venues: [] }).category).toBe("publication");
-    expect(routeSearchOptions("studies-official", { ...context, venues: [...context.venues!,
-      { name: "Official records", domain: "ons.gov.uk", kind: "official" }] }).category).toBeUndefined();
-  });
-  test("reserves every paired search leg within an explicit allowance and retains legacy allocations", () => {
-    for (const depth of ["quick", "standard", "deep"] as const) for (const languageCount of [1, 2, 3]) for (let searches = 0; searches <= 30; searches += 1) {
-      const allocation = researchSearchAllocation(searches, depth, true, languageCount);
-      expect(allocation.searchLegs).toBeLessThanOrEqual(searches);
-      expect(allocation.searchLegs).toBe((allocation.domainQueries + allocation.audienceQueries) * 2 * languageCount + allocation.candidateLimit);
-    }
-    expect(researchSearchAllocation(10, "standard", false)).toMatchObject({ domainQueries: 3, audienceQueries: 3, candidateLimit: 4, searchLegs: 10 });
-    expect(researchSearchAllocation(10, "quick")).toMatchObject({ domainQueries: 2, audienceQueries: 1, candidateLimit: 3, searchLegs: 9 });
-  });
   test("pairs firsthand questions with their venue and keeps review sites for alternatives", () => {
     expect(searchRoutes("firsthand-experience")).toEqual(["open-web", "community"]);
     expect(searchRoutes("firsthand-experience", { venues: [{ name: "Tool tracker", kind: "issue-tracker", domain: "github.com" }] }))
@@ -144,10 +113,7 @@ describe("source routing", () => {
     expect(filterRoutedSources([{ id: "linkedin", url: "https://www.linkedin.com/posts/example", title: "Post", text: "Quote" }])).toEqual([]);
   });
 
-  test("demotes a host at exactly 80% vendor or illustration and only on firsthand routes", () => {
-    const factors = ["vendor", "vendor", "illustration", "vendor", "firsthand"].map((sourceRole) => ({ sourceRole, source: { url: "https://vendor.test/page" } }));
-    expect(vendorDominatedDomains(factors)).toEqual(["vendor.test"]);
-    expect(vendorDominatedDomains([...factors, { sourceRole: "measured", source: { url: "https://vendor.test/study" } }])).toEqual([]);
+  test("excludes demoted hosts only on firsthand routes", () => {
     const context = { excludedFirsthandDomains: ["vendor.test"] };
     expect(routeSearchOptions("community", context).excludeDomains).toContain("vendor.test");
     expect(routeSearchOptions("open-web", context, true).excludeDomains).toContain("vendor.test");

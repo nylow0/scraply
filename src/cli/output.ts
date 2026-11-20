@@ -17,7 +17,7 @@ export class CliError extends Error {
   }
 }
 
-export function errorResponse(error: unknown): { exitCode: ExitCode; response: Response } {
+export function errorResponse(error: unknown): { exitCode: ExitCode; response: Extract<Response, { ok: false }> } {
   const normalized = error instanceof CliError ? error
     : error instanceof z.ZodError
       ? new CliError("USAGE", `Invalid input: ${error.issues.map(issue => `${issue.path.join(".") || "input"}: ${issue.message}`).join("; ")}`, 2)
