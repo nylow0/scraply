@@ -17,6 +17,16 @@ Generating a list of ideas and ranking them produces cautious, hedged recommenda
 9. **Climb the ladder.** Small case, then held-out replication, then a broad test, then a benchmark against what already exists. Scale up only what survived the step below.
 10. **Never pad.** Zero surviving claims, or an inconclusive result, is a valid answer. Say so plainly.
 
+## Five angles on a seed
+
+Original ideas rarely come from nothing; they come from connecting what already exists in a way nobody has. Look at the seed from each angle below. An angle keeps the seed and changes where to look, and whatever it suggests is a claim like any other: it lives or dies by the evidence.
+
+1. **Borrow from another field.** A method or model that works elsewhere and has not been tried here, such as studying why businesses survive the way biologists study why species do.
+2. **Carry a result somewhere untested.** Something known for one group, place, period, or scale and never checked for another, such as a finding about adults nobody has tested on children.
+3. **Use a new tool on an old question.** Data or a technique that did not exist when the question was last answered, such as satellite images revealing ancient trade routes.
+4. **Question an old assumption.** Something the field takes for granted, turned into a claim with a kill condition, such as whether fewer working hours means less work gets done.
+5. **Combine seemingly unrelated ideas.** The seed's subject joined with a field that seems to have nothing to do with it, such as what video games could teach neuroscience. The seed stays one half of the pair.
+
 ## What a good idea looks like
 
 Specific about who it is for or what it predicts; not what any panel would have suggested; testable with what the owner actually has; meaningfully better than what exists if it is true; and honest about what is still unknown.
