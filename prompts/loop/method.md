@@ -19,7 +19,7 @@ Generating a list of ideas and ranking them produces cautious, hedged recommenda
 
 ## Five angles on a seed
 
-Original ideas rarely come from nothing; they come from connecting what already exists in a way nobody has. Look at the seed from each angle below. An angle keeps the seed and changes where to look, and whatever it suggests is a claim like any other: it lives or dies by the evidence.
+Original ideas rarely come from nothing; they come from connecting what already exists in a way nobody has. When framing the seed and proposing variants, look at it from each angle below. An angle keeps the seed and changes where to look, and whatever it suggests is a claim like any other: it lives or dies by the evidence.
 
 1. **Borrow from another field.** A method or model that works elsewhere and has not been tried here, such as studying why businesses survive the way biologists study why species do.
 2. **Carry a result somewhere untested.** Something known for one group, place, period, or scale and never checked for another, such as a finding about adults nobody has tested on children.
